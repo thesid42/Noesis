@@ -66,6 +66,24 @@ class ObservationBody(BaseModel):
     observation: dict[str, Any]
 
 
+class EditorialBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent_id: str = Field(min_length=1, max_length=120)
+    request_id: str = Field(min_length=1, max_length=160)
+    session_id: str = Field(min_length=1, max_length=160)
+    epoch: int = Field(ge=0)
+    override_epoch: int = Field(ge=0)
+    policy_id: str = Field(min_length=1, max_length=160)
+    min_shot_s: float = Field(ge=4, le=8)
+    overlap_mode: Literal["hold", "wide"]
+    reason: str = Field(min_length=1, max_length=400)
+    model: str = Field(min_length=1, max_length=160)
+    response_id: str = Field(min_length=1, max_length=200)
+    latency_ms: float = Field(ge=0, le=30000)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+
+
 class MissingMedia:
     """Visible service placeholder used only before the media module is present."""
 
@@ -278,6 +296,14 @@ def create_app(
     @app.get("/api/agents/request")
     async def agent_request() -> dict[str, Any] | None:
         return await director.current_request()
+
+    @app.get("/api/agents/editorial")
+    async def editorial_request() -> dict[str, Any] | None:
+        return await director.editorial_request()
+
+    @app.post("/api/agents/editorial")
+    async def editorial_policy(body: EditorialBody) -> dict[str, Any]:
+        return await director.accept_editorial_policy(body.model_dump())
 
     @app.get("/program", response_class=HTMLResponse)
     async def program_page() -> Response:

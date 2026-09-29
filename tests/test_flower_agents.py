@@ -10,10 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "flower_apps"))
 from noesis_agents.policy import (  # noqa: E402
     make_camera_observation,
     observation_revision,
+    parse_editorial_policy,
     rule_decision,
     usable_camera_reports,
-    validate_model_decision,
 )
+from noesis_agents.agent_app import _editorial_model_input, _proposal_body  # noqa: E402
 
 
 def _request(*reports: dict, candidate: str | None = "closeup1") -> dict:
@@ -109,15 +110,62 @@ def test_rules_switch_only_when_candidate_is_the_sole_agent_reported_speaker() -
     assert rule_decision(missing)["action"] == "hold"
 
 
-def test_model_cannot_select_an_unreported_or_unhealthy_camera() -> None:
+def test_editorial_policy_parser_accepts_only_bounded_policy_json() -> None:
+    policy = parse_editorial_policy(
+        '{"min_shot_s":4,"overlap_mode":"hold","reason":"Keep the current shot."}'
+    )
+    assert policy == {
+        "min_shot_s": 4.0,
+        "overlap_mode": "hold",
+        "reason": "Keep the current shot.",
+    }
+    assert parse_editorial_policy(
+        '{"min_shot_s":8,"overlap_mode":"wide","reason":"A wide view is clearer."}'
+    )["min_shot_s"] == 8.0
+
+
+def test_editorial_policy_parser_rejects_malformed_or_out_of_range_results() -> None:
+    invalid = (
+        "",
+        '{"min_shot_s":5,"overlap_mode":"hold",',  # truncated JSON
+        '{"min_shot_s":5,"overlap_mode":"hold","reason":"x","camera_id":"closeup1"}',
+        '{"min_shot_s":true,"overlap_mode":"hold","reason":"x"}',
+        '{"min_shot_s":NaN,"overlap_mode":"hold","reason":"x"}',
+        '{"min_shot_s":3.99,"overlap_mode":"hold","reason":"x"}',
+        '{"min_shot_s":8.01,"overlap_mode":"hold","reason":"x"}',
+        '{"min_shot_s":5,"overlap_mode":"switch","reason":"x"}',
+        '{"min_shot_s":5,"overlap_mode":"wide","reason":"  "}',
+        {"min_shot_s": 5, "overlap_mode": "hold", "reason": "x"},
+    )
+    assert all(parse_editorial_policy(value) is None for value in invalid)
+
+
+def test_rules_proposal_payload_marks_fast_decision_source() -> None:
     request = _request(_report("closeup1"))
-    assert validate_model_decision(
-        {"action": "switch", "camera_id": "closeup2", "reason": "Clear view."},
-        request=request,
-        allowed_camera_ids={"closeup1", "closeup2"},
-    ) is None
-    assert validate_model_decision(
-        {"action": "switch", "camera_id": "closeup1", "reason": "Clear view."},
-        request=request,
-        allowed_camera_ids={"closeup1"},
-    ) == {"action": "switch", "camera_id": "closeup1", "reason": "Clear view."}
+    body = _proposal_body(
+        {"agent_id": "director"},
+        request,
+        rule_decision(request),
+    )
+    assert body["action"] == "switch"
+    assert body["camera_id"] == "closeup1"
+    assert body["decision_source"] == "rules"
+
+
+def test_editorial_input_sanitizes_nonfinite_source_metrics() -> None:
+    request = {
+        "request_id": "req-1",
+        "session_id": "session-a",
+        "epoch": 3,
+        "observation_revision": 125,
+        "program_camera_id": "corner",
+        "cameras": [{"id": "closeup1", "healthy": True, "quality": float("nan"), "age_ms": 5}],
+        "camera_observations": [],
+        "recent_events": [{"kind": "speech", "time_s": float("inf")}],
+    }
+    import json
+
+    payload = _editorial_model_input(request)
+    assert payload["cameras"][0]["quality"] is None
+    assert payload["recent_events"][0] == {"kind": "speech"}
+    json.dumps(payload, allow_nan=False)

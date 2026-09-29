@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import math
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -143,29 +144,30 @@ def rule_decision(request: dict[str, Any]) -> dict[str, str]:
     return {"action": "hold", "reason": "Camera-agent evidence is ambiguous or quiet; holding the current shot."}
 
 
-def validate_model_decision(
-    decision: Any,
-    *,
-    request: dict[str, Any],
-    allowed_camera_ids: set[str],
-) -> dict[str, str] | None:
-    """Accept only a compact decision whose target is independently allowed."""
-    if not isinstance(decision, dict):
+def parse_editorial_policy(response_text: Any) -> dict[str, Any] | None:
+    """Validate the model's short-lived editorial policy JSON, never a shot command."""
+    if not isinstance(response_text, str) or not response_text.strip():
         return None
-    action = decision.get("action")
-    if action == "hold":
-        reason = decision.get("reason")
-        if not isinstance(reason, str) or not reason.strip():
-            return None
-        return {"action": "hold", "reason": reason.strip()[:300]}
-    camera_id = decision.get("camera_id")
-    if action != "switch" or camera_id not in allowed_camera_ids:
+    try:
+        policy = json.loads(response_text)
+    except json.JSONDecodeError:
         return None
-    reports = usable_camera_reports(request)
-    observation = reports.get(camera_id, {}).get("observation", {})
-    if observation.get("healthy") is not True or observation.get("speaking") is not True:
+    if not isinstance(policy, dict) or set(policy) != {"min_shot_s", "overlap_mode", "reason"}:
         return None
-    reason = decision.get("reason")
+    min_shot_s = policy.get("min_shot_s")
+    if isinstance(min_shot_s, bool) or not isinstance(min_shot_s, (int, float)):
+        return None
+    min_shot_s = float(min_shot_s)
+    if not math.isfinite(min_shot_s) or not 4.0 <= min_shot_s <= 8.0:
+        return None
+    overlap_mode = policy.get("overlap_mode")
+    if overlap_mode not in {"hold", "wide"}:
+        return None
+    reason = policy.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         return None
-    return {"action": "switch", "camera_id": camera_id, "reason": reason.strip()[:300]}
+    return {
+        "min_shot_s": min_shot_s,
+        "overlap_mode": overlap_mode,
+        "reason": reason.strip()[:300],
+    }

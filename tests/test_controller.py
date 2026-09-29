@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from io import BytesIO
 
 import pytest
@@ -498,4 +499,139 @@ async def test_quiet_camera_recovery_leaves_slate_without_speaker_evidence():
     assert (await controller.get_state())["program"]["camera_id"] == "slate"
     media.cameras["corner"].update(healthy=True, status="healthy")
     await controller.tick()
+    assert (await controller.get_state())["program"]["camera_id"] == "corner"
+
+
+async def editorial_fixture():
+    controller, media, obs = await make_controller(model_name="test-model")
+    await controller.heartbeat({"agent_id": "director", "role": "director", "runtime": "flower",
+                                "run_id": "123", "decision_mode": "llm"})
+    now = time.monotonic()
+    for camera_id in CAMERA_IDS[:4]:
+        controller._camera_observations[camera_id] = {
+            "camera_id": camera_id, "source_observation_revision": media.revision,
+            "observation": {"session_id": controller._session["id"], "epoch": controller._session["epoch"],
+                            "healthy": True, "speaking": False},
+        }
+        controller._camera_observation_mono[camera_id] = now
+    request = await controller.editorial_request()
+    assert request is not None
+    body = {key: request[key] for key in ("request_id", "session_id", "epoch", "override_epoch")}
+    body.update(agent_id="director", policy_id="policy-test", min_shot_s=6.0, overlap_mode="wide",
+                reason="Use room context for overlap with calm pacing.", model="test-model",
+                response_id="resp-test", latency_ms=1800, input_tokens=80, output_tokens=30)
+    return controller, media, obs, body
+
+
+@pytest.mark.asyncio
+async def test_editorial_policy_controls_pacing_but_never_delays_health():
+    controller, media, _, body = await editorial_fixture()
+    accepted = await controller.accept_editorial_policy(body)
+    assert accepted["policy"]["expires_in_ms"] > 19000
+    assert controller._effective_min_shot(time.monotonic()) == 6.0
+    media.cameras["closeup1"]["speaking"] = True
+    media.time_s = 5.0
+    await controller.tick()
+    controller._speaker_candidate_since = time.monotonic() - 1.0
+    await controller.tick()
+    assert (await controller.get_state())["program"]["camera_id"] == "corner"
+    media.time_s = 6.1
+    await controller.tick()
+    state = await controller.get_state()
+    assert state["program"]["camera_id"] == "closeup1"
+    assert state["metrics"]["policy_guided_cuts"] == 1
+    assert state["program"]["editorial_policy_id"] == "policy-test"
+    media.cameras["closeup1"]["healthy"] = False
+    media.cameras["closeup1"]["status"] = "black"
+    media.time_s = 6.2
+    await controller.tick()
+    state = await controller.get_state()
+    assert state["program"]["camera_id"] != "closeup1"
+    assert state["metrics"]["fallbacks"] == 1
+
+
+@pytest.mark.asyncio
+async def test_editorial_policy_uses_current_overlap_and_expires():
+    controller, media, _, body = await editorial_fixture()
+    await controller.accept_editorial_policy(body)
+    cameras = media.cameras
+    cameras["closeup1"]["speaking"] = cameras["closeup2"]["speaking"] = True
+    assert controller._speaker_camera(cameras) == "corner"
+    cameras["corner"]["healthy"] = False
+    assert controller._speaker_camera(cameras) is None
+    controller._editorial_policy["expires_mono"] = time.monotonic() - 1
+    assert controller._effective_min_shot(time.monotonic()) == 4.0
+    assert (await controller.get_state())["flower"]["editorial_policy"] is None
+
+
+@pytest.mark.asyncio
+async def test_editorial_policy_rejects_old_manual_epoch_and_duplicate():
+    controller, _, _, body = await editorial_fixture()
+    await controller.manual_override("corner")
+    await controller.resume_autopilot()
+    with pytest.raises(ControllerError):
+        await controller.accept_editorial_policy(body)
+    controller, _, _, body = await editorial_fixture()
+    await controller.accept_editorial_policy(body)
+    with pytest.raises(ControllerError):
+        await controller.accept_editorial_policy(body)
+
+
+@pytest.mark.asyncio
+async def test_editorial_policy_rejects_wrong_model_late_and_unsafe_bounds():
+    controller, _, _, body = await editorial_fixture()
+    with pytest.raises(ControllerError):
+        await controller.accept_editorial_policy({**body, "model": "wrong-profile"})
+    with pytest.raises(ControllerError):
+        await controller.accept_editorial_policy({**body, "min_shot_s": float("nan")})
+    controller._editorial_pending.deadline_mono = time.monotonic() - 1
+    with pytest.raises(ControllerError):
+        await controller.accept_editorial_policy(body)
+
+
+@pytest.mark.asyncio
+async def test_editorial_policy_drops_on_director_outage_and_seek():
+    controller, _, _, body = await editorial_fixture()
+    await controller.accept_editorial_policy(body)
+    controller._agent_seen_mono["director"] = time.monotonic() - 20
+    assert controller._effective_min_shot(time.monotonic()) == 4.0
+    controller, _, _, body = await editorial_fixture()
+    await controller.session_seek(4.0)
+    with pytest.raises(ControllerError):
+        await controller.accept_editorial_policy(body)
+
+
+@pytest.mark.asyncio
+async def test_new_editorial_policy_cancels_fast_request_and_overlap_blocks_late_cut():
+    controller, media, _, body = await editorial_fixture()
+    media.cameras["closeup1"]["speaking"] = True
+    media.time_s = 9.0
+    await controller.tick()
+    controller._new_pending_request("closeup1", time.monotonic())
+    original = await controller.current_request()
+    await controller.accept_editorial_policy({**body, "overlap_mode": "hold"})
+    assert await controller.current_request() is None
+    with pytest.raises(ControllerError):
+        await controller.accept_proposal(proposal_for(original, agent_id="director"))
+    controller._new_pending_request("closeup1", time.monotonic())
+    pending = await controller.current_request()
+    media.cameras["closeup2"]["speaking"] = True
+    await controller.tick()
+    with pytest.raises(ControllerError, match="current speaker evidence"):
+        await controller.accept_proposal(proposal_for(pending, agent_id="director"))
+    assert (await controller.get_state())["program"]["camera_id"] == "corner"
+
+
+@pytest.mark.asyncio
+async def test_baseline_commit_rechecks_new_policy_after_waiting_for_lock():
+    controller, media, _, body = await editorial_fixture()
+    media.cameras["closeup1"]["speaking"] = True
+    media.time_s = 5.0
+    await controller.tick()
+    await controller._action_lock.acquire()
+    cut = asyncio.create_task(controller._automatic_cut("closeup1", reason="Old baseline decision", source="baseline"))
+    await asyncio.sleep(0)
+    await controller.accept_editorial_policy(body)
+    controller._action_lock.release()
+    assert await cut is False
     assert (await controller.get_state())["program"]["camera_id"] == "corner"

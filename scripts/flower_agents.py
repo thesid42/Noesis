@@ -7,18 +7,38 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+
+from dotenv import dotenv_values
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from noesis.model_config import (  # noqa: E402
+    ModelProfile,
+    ModelProfileError,
+    PROFILE_MANIFEST,
+    launcher_environment,
+    load_model_profile,
+    read_profile_manifest,
+    require_matching_profile,
+    superlink_environment,
+    write_profile_manifest,
+)
+
 FLOWER_APP_DIR = PROJECT_ROOT / "flower_apps"
 RUNTIME_DIR = PROJECT_ROOT / ".runtime"
 MANAGED_RUNS_FILE = RUNTIME_DIR / "flower-agents.json"
+SUPERLINK_PROFILE_FILE = PROJECT_ROOT / PROFILE_MANIFEST
 CAMERA_IDS = ("closeup1", "closeup2", "closeup3", "closeup4")
 DEFAULT_API_URL = "http://127.0.0.1:8000"
 DEFAULT_CONTROLLER_URL = "http://127.0.0.1:8765"
@@ -90,8 +110,27 @@ def _http_state(controller_url: str) -> dict[str, Any]:
     return payload
 
 
-def _environment() -> dict[str, str]:
-    env = os.environ.copy()
+def _profile_environment(args: argparse.Namespace) -> tuple[dict[str, str], ModelProfile | None]:
+    # Read .env as values rather than injecting provider keys into this process.
+    source = {key: value for key, value in dotenv_values(PROJECT_ROOT / ".env").items() if value is not None}
+    source.update(os.environ)
+    if getattr(args, "model_endpoint", None):
+        names = {
+            "kimi": "NEBIUS_KIMI_API_ENDPOINT",
+            "minimax": "NEBIUS_MINIMAX_API_ENDPOINT",
+        }
+        source[names[args.model_profile]] = args.model_endpoint
+    if getattr(args, "profile_model", None):
+        names = {"kimi": "NEBIUS_KIMI_MODEL", "minimax": "NEBIUS_MINIMAX_MODEL"}
+        source[names[args.model_profile]] = args.profile_model
+    if getattr(args, "profile_key_fingerprint", None):
+        source["NOESIS_PROFILE_KEY_FINGERPRINT"] = args.profile_key_fingerprint
+    profile = load_model_profile(args.model_profile, source)
+    return source, profile
+
+
+def _environment(source: dict[str, str], profile: ModelProfile | None) -> dict[str, str]:
+    env = launcher_environment(source, profile)
     scripts_dir = PROJECT_ROOT / ".venv" / "Scripts"
     env["PATH"] = f"{scripts_dir}{os.pathsep}{env.get('PATH', '')}"
     env["FLWR_HOME"] = str(RUNTIME_DIR / "flower-home")
@@ -100,14 +139,43 @@ def _environment() -> dict[str, str]:
     return env
 
 
-def _ensure_superlink(api_url: str) -> tuple[Any, int | None]:
+def _port_open(api_url: str) -> bool:
+    parsed = urlsplit(api_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        with socket.create_connection((host, port), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def _ensure_superlink(
+    api_url: str,
+    profile: ModelProfile | None,
+    source_environment: dict[str, str],
+) -> tuple[Any, int | None, int | None]:
     client = _flower_client(api_url)
     try:
         _list_runs(client)
-        print(f"Flower SuperLink ready at {api_url} (reusing existing service).")
-        return client, None
     except Exception:
         client.close()
+        if _port_open(api_url):
+            # A live but unverifiable service must never silently retain old credentials.
+            raise RuntimeError(
+                "Flower SuperLink is occupying the configured port but its API/profile cannot be verified. "
+                "Stop it and restart using this launcher."
+            )
+    else:
+        try:
+            manifest = require_matching_profile(SUPERLINK_PROFILE_FILE, profile)
+        except Exception:
+            client.close()
+            raise
+        pid_value = manifest.get("pid")
+        service_pid = int(pid_value) if isinstance(pid_value, int) else None
+        print(f"Flower SuperLink ready at {api_url} (profile: {profile.name if profile else 'rules'}; reusing matching service).")
+        return client, None, service_pid
 
     scripts_dir = PROJECT_ROOT / ".venv" / "Scripts"
     executable = scripts_dir / "flower-superlink.exe"
@@ -127,7 +195,7 @@ def _ensure_superlink(api_url: str) -> tuple[Any, int | None]:
                 "--fleet-api-address", "127.0.0.1:9092", "--disable-runtime-dependency-installation",
             ],
             cwd=PROJECT_ROOT,
-            env=_environment(),
+            env=superlink_environment(_environment(source_environment, profile), profile),
             stdin=subprocess.DEVNULL,
             stdout=stdout_handle,
             stderr=stderr_handle,
@@ -146,8 +214,9 @@ def _ensure_superlink(api_url: str) -> tuple[Any, int | None]:
         try:
             client = _flower_client(api_url)
             _list_runs(client)
-            print(f"Started Flower SuperLink (PID {process.pid}) at {api_url}.")
-            return client, process.pid
+            write_profile_manifest(SUPERLINK_PROFILE_FILE, profile, process.pid)
+            print(f"Started Flower SuperLink (PID {process.pid}) at {api_url}; profile: {profile.name if profile else 'rules'}.")
+            return client, process.pid, process.pid
         except Exception as exc:
             last_error = exc
             if client:
@@ -159,7 +228,15 @@ def _ensure_superlink(api_url: str) -> tuple[Any, int | None]:
 
 def _start(args: argparse.Namespace) -> int:
     _http_state(args.controller_url)
-    client, superlink_pid = _ensure_superlink(args.api_url)
+    source_environment, profile = _profile_environment(args)
+    if profile and args.model and args.model != profile.model:
+        raise RuntimeError("The --model value must match the selected Nebius profile.")
+    director_mode = args.director_mode or ("llm" if profile else "rules")
+    director_model = profile.model if profile else (args.model or source_environment.get("NOESIS_MODEL"))
+    if director_mode == "llm" and not director_model:
+        raise RuntimeError("Director LLM mode requires --model or a selected model profile.")
+
+    client, started_pid, service_pid = _ensure_superlink(args.api_url, profile, source_environment)
     try:
         existing = _read_state()
         existing_runs = _list_runs(client)
@@ -181,13 +258,15 @@ def _start(args: argparse.Namespace) -> int:
             "started_at": _now(),
             "api_url": args.api_url,
             "controller_url": args.controller_url,
-            "superlink_pid": superlink_pid,
+            "model_profile": profile.name if profile else "rules",
+            "superlink_pid": service_pid,
+            "superlink_started_here": started_pid is not None,
             "runs": [],
         }
         specs = [
             {"role": "camera", "camera_id": camera_id, "agent_id": f"camera-{camera_id}", "decision_mode": "rules"}
             for camera_id in CAMERA_IDS
-        ] + [{"role": "director", "agent_id": "director", "decision_mode": args.director_mode, "model": args.model}]
+        ] + [{"role": "director", "agent_id": "director", "decision_mode": director_mode, "model": director_model}]
         for spec in specs:
             config = {
                 **spec,
@@ -213,7 +292,7 @@ def _start(args: argparse.Namespace) -> int:
             _write_state(state)
             print(f"Started {entry['agent_id']} Flower run {entry['run_id']}.")
         _write_state(state)
-        print(f"Started {len(state['runs'])} separate Flower AgentApp runs. Director mode: {args.director_mode}.")
+        print(f"Started {len(state['runs'])} separate Flower AgentApp runs. Director mode: {director_mode}; profile: {profile.name if profile else 'rules'}.")
         return 0
     except Exception:
         # If a partial start failed, stop only the run IDs created in this call.
@@ -223,6 +302,22 @@ def _start(args: argparse.Namespace) -> int:
             state["failed_at"] = _now()
             _write_state(state)
         raise
+    finally:
+        client.close()
+
+
+def _verify_profile(args: argparse.Namespace) -> int:
+    source_environment, profile = _profile_environment(args)
+    del source_environment
+    client = _flower_client(args.api_url)
+    try:
+        _list_runs(client)
+        require_matching_profile(SUPERLINK_PROFILE_FILE, profile)
+        print(f"Flower SuperLink profile verified: {profile.name if profile else 'rules'}.")
+        return 0
+    except Exception as exc:
+        print(f"Flower SuperLink profile verification failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
     finally:
         client.close()
 
@@ -282,22 +377,43 @@ def _status(args: argparse.Namespace) -> int:
 
 def _stop(args: argparse.Namespace) -> int:
     state = _read_state()
-    if not state["runs"]:
+    if not state["runs"] and not args.stop_superlink:
         print("No launcher-managed Flower AgentApp runs are recorded.")
         return 0
-    client = _flower_client(args.api_url)
-    try:
-        errors = _stop_entries(client, state["runs"])
-    except Exception as exc:
-        print(f"Could not query Flower runs at {args.api_url}: {type(exc).__name__}: {exc}")
-        return 2
-    finally:
-        client.close()
+    errors = []
+    if state["runs"]:
+        client = _flower_client(args.api_url)
+        try:
+            errors = _stop_entries(client, state["runs"])
+        except Exception as exc:
+            print(f"Could not query Flower runs at {args.api_url}: {type(exc).__name__}: {exc}")
+            return 2
+        finally:
+            client.close()
     state["stopped_at"] = _now()
     _write_state(state)
     for error in errors:
         print(error, file=sys.stderr)
-    print("Flower AgentApp stop complete. The shared SuperLink was left running.")
+    if args.stop_superlink:
+        manifest = read_profile_manifest(SUPERLINK_PROFILE_FILE)
+        pid_value = manifest.get("pid") if manifest else None
+        expected_pid = state.get("superlink_pid")
+        if isinstance(pid_value, int) and pid_value == expected_pid:
+            try:
+                if os.name == "nt":
+                    result = subprocess.run(["taskkill", "/PID", str(pid_value), "/T", "/F"], capture_output=True, text=True)
+                    if result.returncode != 0 and "not found" not in (result.stderr + result.stdout).lower():
+                        errors.append("Could not stop launcher-owned Flower SuperLink; see its .runtime log.")
+                else:
+                    os.kill(pid_value, 15)
+                SUPERLINK_PROFILE_FILE.unlink(missing_ok=True)
+                print("Stopped the Flower SuperLink started by this launcher.")
+            except OSError:
+                errors.append("Could not stop launcher-owned Flower SuperLink.")
+        else:
+            errors.append("SuperLink ownership record changed; left the service running.")
+    else:
+        print("Flower AgentApp stop complete. The shared SuperLink was left running.")
     return 1 if errors else 0
 
 
@@ -309,14 +425,26 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--controller-url", default=DEFAULT_CONTROLLER_URL, help="Noesis HTTP broker URL")
     start.add_argument("--duration-s", type=float, default=3600.0, help="maximum runtime for each AgentApp")
     start.add_argument("--camera-interval-s", type=float, default=0.20, help="camera snapshot sampling interval")
-    start.add_argument("--director-mode", choices=("rules", "llm"), default="rules", help="rules or optional Flower-runtime model mode")
+    start.add_argument("--director-mode", choices=("rules", "llm"), default=None, help="rules or optional Flower-runtime model mode (profile defaults to llm)")
     start.add_argument("--model", default=None, help="Flower runtime model name for --director-mode llm")
+    start.add_argument("--model-profile", choices=("kimi", "minimax"), default=None, help="use a configured Nebius model profile and LLM directing")
+    start.add_argument("--model-endpoint", default=None, help=argparse.SUPPRESS)
+    start.add_argument("--profile-model", default=None, help=argparse.SUPPRESS)
+    start.add_argument("--profile-key-fingerprint", default=None, help=argparse.SUPPRESS)
     start.set_defaults(handler=_start)
+    verify = subparsers.add_parser("verify-profile", help="verify the running SuperLink matches configured model credentials")
+    verify.add_argument("--api-url", default=DEFAULT_API_URL)
+    verify.add_argument("--model-profile", choices=("kimi", "minimax"), default=None)
+    verify.add_argument("--model-endpoint", default=None, help=argparse.SUPPRESS)
+    verify.add_argument("--profile-model", default=None, help=argparse.SUPPRESS)
+    verify.add_argument("--profile-key-fingerprint", default=None, help=argparse.SUPPRESS)
+    verify.set_defaults(handler=_verify_profile)
     status = subparsers.add_parser("status", help="show the status of launcher-managed runs")
     status.add_argument("--api-url", default=DEFAULT_API_URL)
     status.set_defaults(handler=_status)
     stop = subparsers.add_parser("stop", help="stop only the run IDs recorded by this launcher")
     stop.add_argument("--api-url", default=DEFAULT_API_URL)
+    stop.add_argument("--stop-superlink", action="store_true", help="also stop this launcher-owned SuperLink")
     stop.set_defaults(handler=_stop)
     return parser
 

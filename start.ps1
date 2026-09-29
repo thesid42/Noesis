@@ -1,4 +1,8 @@
-param([switch]$PreviewOnly, [switch]$OBS)
+param(
+    [switch]$PreviewOnly,
+    [switch]$OBS,
+    [ValidateSet('kimi', 'minimax')][string]$ModelProfile
+)
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $env:UV_CACHE_DIR = Join-Path $PSScriptRoot '.runtime\uv-cache'
@@ -13,5 +17,6 @@ if ($PreviewOnly) {
 } else {
     $directorArgs = @('scripts/run_demo.py')
     if ($OBS) { $directorArgs += '--obs' }
+    if ($ModelProfile) { $directorArgs += @('--model-profile', $ModelProfile) }
     & $directorPython @directorArgs
 }

@@ -17,6 +17,16 @@ After completing the fresh setup below, open **http://127.0.0.1:8765**. Select *
 
 `start.ps1` starts the controller and five bounded Flower runs (four camera agents and one director). `-OBS` also starts the workspace's portable OBS and prepares `NOESIS_Program`. Existing local services are reused. Keep the terminal open; Ctrl+C stops the session and managed agents. Portable OBS remains in the tray so it can preserve its configuration.
 
+To use a configured Nebius model for editorial policy:
+
+```powershell
+.\start.ps1 -OBS -ModelProfile kimi
+# Stop the launcher before switching providers:
+.\start.ps1 -OBS -ModelProfile minimax
+```
+
+See [Flower and Nebius configuration](docs/FLOWER.md) for private environment variables and the bounded model rehearsal.
+
 For only the dashboard and deterministic fallback:
 
 ```powershell
@@ -47,6 +57,11 @@ flowchart LR
   M[Shared-clock media and causal VAD] --> C[Four Flower camera AgentApps]
   C --> B[Local HTTP observation broker]
   B --> D[Flower Director AgentApp]
+  D --> F[Flower model runtime]
+  F --> N[Nebius Kimi or MiniMax]
+  N --> F
+  F --> E[Bounded editorial policy]
+  E --> V
   D --> V[Deadline and action validator]
   M --> H[Independent local health and speaker fallback]
   H --> P[Selected program camera]
@@ -62,7 +77,7 @@ The controller selects camera images within `/program`; OBS captures that single
 
 The controller rejects expired/duplicate proposals, mismatched session and override epochs, unhealthy targets, and rapid cuts. Manual selection remains latched even if the source subsequently fails. Local health recovery continues independently of editorial/model work when autopilot is enabled. Natural replay completion finalizes the recording. If OBS disconnects before confirming Stop, the dashboard keeps Stop available for retry after reconnecting and blocks a new session until that recording is resolved.
 
-Flower uses its pinned 1.39.0 control client to submit a FAB with a nonempty `user_prompt`; this was tested against the actual local SuperLink. See [Flower setup](docs/FLOWER.md) for standalone start/status/stop and the optional model path. Provider-backed inference is deliberately unverified until credentials are supplied.
+Flower uses its pinned 1.39.0 control client to submit a FAB with a nonempty `user_prompt`; this was tested against the actual local SuperLink. See [Flower setup](docs/FLOWER.md) for standalone start/status/stop and the optional model path. Nebius Kimi and MiniMax profiles route inference through Flower; see the model-profile instructions and validation results in that guide.
 
 ## AMI ES2002a data
 
@@ -118,7 +133,7 @@ Verified on this machine on 28 September 2026: **30 tests passed**, five actual 
 
 The real AMI check also passed: a **20-second recording** with five healthy camera feeds, an accepted Flower director cut, later local speaker-following, and non-silent program audio (peak 0.424, RMS 0.032). Local evidence was saved as `recordings/verified-ami-demo.mp4` and `recordings/verified-synthetic-demo.mp4`; these recordings are excluded from the public repository.
 
-These results were recorded before the rename to Noesis on 29 September 2026. Tests were not rerun for that rename.
+Those original results predate the rename. On **29 September 2026**, the updated suite passed **40 tests** and both Nebius profiles passed `scripts/verify_nebius.py` through Flower. Each model accepted three policies, applied policy on four camera cuts, passed manual override, and produced a decodable OBS recording (Kimi 38.83 seconds; MiniMax 39.23 seconds). Final policy latencies were about 3.5 seconds for Kimi and 4.0–5.5 seconds for MiniMax; an earlier cold Kimi call took 22.7 seconds. These synthetic rehearsals establish working model integration, not comparative editorial quality. Full details are in [validation notes](docs/VALIDATION.md).
 
 The unit tests also generate AVI/WAV fixtures and exercise the actual OpenCV decoder and audio VAD. These checks establish working decoding, switching, and recording; they do **not** establish AMI editorial quality or measured real-footage lip sync. Verify A/V alignment and microphone quality on a longer selected AMI excerpt before presenting those as validated.
 
@@ -130,4 +145,4 @@ The unit tests also generate AVI/WAV fixtures and exercise the actual OpenCV dec
 4. Select the room camera, show that manual control stays latched, then resume autopilot.
 5. Stop and play the actual recording.
 
-Current limits: this is a replay-based hackathon prototype, not live capture from arbitrary hardware. The model-free mode is complete; optional model inference, multi-machine execution, and real AMI editorial/synchronization evaluation are separate validation work. OBS renders at 30 fps; source JPEG sampling is bounded near 10 fps, so it is not yet a full-motion broadcast pipeline.
+Current limits: this is a replay-based hackathon prototype, not live capture from arbitrary hardware. The model chooses bounded shot pacing and overlap policy; current camera selection and health recovery remain local. Multi-machine execution and a longer AMI editorial/synchronization evaluation remain separate validation work. OBS renders at 30 fps; source JPEG sampling is bounded near 10 fps, so it is not yet a full-motion broadcast pipeline.

@@ -5,6 +5,7 @@ __pycache__/
 .env
 .env.*
 !.env.example
+ex.txt
 data/
 recordings/
 logs/

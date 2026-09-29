@@ -1,6 +1,33 @@
-# Local validation — 28 September 2026
+# Local validation
 
-These are historical results from before the project was renamed to Noesis on 29 September 2026. Tests were not rerun for the rename. Referenced recordings, reports, and datasets are local artifacts and are excluded from the public repository.
+Referenced recordings, reports, and datasets are local artifacts and are excluded from the public repository.
+
+## Nebius through Flower — 29 September 2026
+
+Both profiles passed `scripts/verify_nebius.py`, Kimi first and MiniMax second, with five live Flower 1.39.0 AgentApps and OBS. Model calls used the injected Flower runtime Responses endpoint, which forwarded to the configured Nebius deployment. Four camera agents and the rules camera-proposal loop continued independently of the model worker.
+
+| Check | Kimi K2.7 Code | MiniMax M3 |
+| --- | --- | --- |
+| Accepted model policies | 3 | 3 |
+| Cuts applying a current model policy | 4 | 4 |
+| End-to-end policy call latencies in final rehearsal | 3.531, 3.485, 3.500 seconds | 5.500, 4.000, 4.515 seconds |
+| Black-fault request to controller recovery | 1,015 ms | 969 ms |
+| Manual latch and policy invalidation | Passed | Passed |
+| Decodable, nonblank OBS recording | 38.83 seconds | 39.23 seconds |
+
+Each trial injected the black fault just after a fresh shot so an ordinary speaker transition could not mask the health recovery event. Both runs stopped recording successfully. Evidence includes safe model response IDs, token counts, Flower run IDs, accepted policy events, and executed camera cuts in `.runtime/nebius-kimi-acceptance.json` and `.runtime/nebius-minimax-acceptance.json`. Playable copies are `recordings/verified-kimi-demo.mp4` and `recordings/verified-minimax-demo.mp4`.
+
+These are synthetic control-path checks, not a model-quality benchmark. Latency includes the Flower runtime and local overhead, and varies: an earlier cold Kimi policy took 22.672 seconds. Policies have a 30-second controller lease and 20-second lifetime after acceptance; stale replies are rejected while local camera control continues. The final runs had no editorial-policy timeouts. Each had one legacy fast rules-request timeout and two minimum-shot proposal rejections; these are separate from hosted inference failures.
+
+The model selects only 4–8 second minimum shots and `hold`/`wide` overlap behavior. Executing its policy does not establish improved editorial quality, visual understanding, lip sync, or repeated-trial output recovery. Only compact camera observations and event types reach Nebius. Keys stay in ignored configuration and the SuperLink environment.
+
+The updated regression suite has **40 passing tests**, including policy expiration, stale session/override rejection, malformed policy rejection, health precedence, and checking a newly accepted policy again before committing a cut.
+
+Flower 1.39.0 also attempts automatic conversation titles with its hardcoded `openai/gpt-5-nano` model. The supplied deployments return nonfatal 404s for those metadata calls. They are separate from the successful Kimi/MiniMax inference calls and are not counted as director results.
+
+## Original rules and AMI validation — 28 September 2026
+
+The following results predate the rename to Noesis. They are retained as historical evidence; the Nebius rehearsal above is the newer integration check.
 
 ## Automated regression suite
 
@@ -29,7 +56,7 @@ The recording is `recordings/2026-09-28 21-37-03.mkv`; a decoded frame is `recor
 
 The installed 20-second prepared set is only an adapter/recording smoke test, not the planned 2–3 minute editorial evaluation. Downloaded prefixes are not treated as full originals.
 
-Real-footage A/V alignment, headset identity/quality, speaker-following coverage, repeated-trial visible-output recovery latency, model-backed inference, and operation across multiple physical machines have not been established. The plan's numeric targets remain targets. The default application and the integration results above do not depend on provider credentials.
+Real-footage A/V alignment, headset identity/quality, speaker-following coverage, repeated-trial visible-output recovery latency, model editorial-quality improvement, and operation across multiple physical machines have not been established. The plan's numeric targets remain targets. The default application and the original rules integration results do not depend on provider credentials.
 
 ## Real AMI recording
 

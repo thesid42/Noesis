@@ -27,18 +27,51 @@ Stopping these runs leaves the shared SuperLink running. If a run stops unexpect
 
 The lifecycle script uses the Flower 1.39 `ControlHttpClient` and builds a local FAB from `flower_apps/`. It passes a JSON run prompt in `StartRunRequest.user_prompt`, which is required by the supported runtime path used here.
 
-## Optional model-backed Director
+## Nebius model profiles
 
-The deterministic Director is the default and remains the fallback. To request an optional model decision, provide an upstream Open Responses-compatible provider to the SuperLink process using Flower's documented environment variables, then start a new set of runs with an available Flower runtime model name:
+Two private profiles are supported: `kimi` and `minimax`. Configure these variables in the ignored `.env`:
+
+- `NEBIUS_KIMI_API_ENDPOINT`, `NEBIUS_KIMI_MODEL`, `NEBIUS_KIMI_API_KEY`
+- `NEBIUS_MINIMAX_API_ENDPOINT`, `NEBIUS_MINIMAX_MODEL`, `NEBIUS_MINIMAX_API_KEY`
+
+The endpoint must be the full Open Responses URL ending in `/responses`. The supplied Nebius deployments use `https://api.tokenfactory.tf-ca1.nebius.com/v1/responses`. Keys stay out of the AgentApp FAB, run prompt, dashboard, and reports; `ex.txt` is also ignored.
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\flower_agents.py stop
-.\.venv\Scripts\python.exe scripts\flower_agents.py start --director-mode llm --model '<available-model-name>'
+.\start.ps1 -OBS -ModelProfile kimi
+# In another terminal:
+.\.venv\Scripts\python.exe scripts/verify_nebius.py --profile kimi
 ```
 
-The AgentApp reads `FLWR_RUNTIME_BASE_URL` and `FLWR_RUNTIME_API_KEY` only inside its Flower run and sends the request through Flower's injected Responses endpoint. The model sees the current request, the rules baseline, and compact reports from camera agents; it does not receive media or future annotations. Its JSON action is checked again against the current request and fresh camera reports. The call is bounded by the request deadline. A timeout, missing runtime access, invalid JSON, or disallowed target falls through to the rules Director. Heartbeats use a separate thread while a model call is in progress.
+Stop that launcher with Ctrl+C before selecting MiniMax:
 
-Do not place provider credentials in the FAB, app prompt, launcher state file, dashboard, or run logs. Configure the upstream provider in the environment of the SuperLink that launches the Flower tasks. Existing SuperLink processes must be restarted to receive new environment values.
+```powershell
+.\start.ps1 -OBS -ModelProfile minimax
+.\.venv\Scripts\python.exe scripts/verify_nebius.py --profile minimax
+```
+
+Switching profiles requires a new SuperLink process because its model workers inherit the upstream configuration. The launchers reject reuse when the running service's recorded profile does not match. The local profile record contains metadata and a key fingerprint, never the key itself.
+
+The AgentApp calls `client.responses.create` with Flower's injected `FLWR_RUNTIME_BASE_URL` and `FLWR_RUNTIME_API_KEY`. Flower forwards each model task to the configured Nebius Responses endpoint using `FLWR_MODEL_API_ENDPOINT` and `FLWR_MODEL_API_KEY`. No direct Nebius inference call is made by the AgentApp.
+
+## Fast camera control and slower editorial policy
+
+Hosted inference takes longer than the fast camera-switching window. The Director therefore keeps camera proposals rules-based, with explicit `decision_source: rules`. A separate worker makes at most one model call at a time, with a 25-second client timeout and a 30-second controller lease. It requests policy roughly every 10 seconds while replay is running in autopilot.
+
+The model receives compact causal camera-agent observations and recent event types, never raw video, audio, transcripts, or credentials. Its strict JSON result can choose only:
+
+- A minimum shot duration from 4 to 8 seconds.
+- `hold` or `wide` for overlapping speakers.
+- A short explanation.
+
+A valid result becomes a 20-second policy. The local controller applies it to current evidence and checks the target again at camera-cut commit. Camera health recovery bypasses the minimum shot duration. Manual override, pause/seek/session changes, director heartbeat loss, or policy expiry remove the policy. Failures retain local rules.
+
+Model response validation, policy acceptance, and actual policy-guided cuts are separate events. The dashboard shows an active model policy only after acceptance; otherwise it explicitly reports local rules or an unverified configuration. Safe model response IDs, token counts, latency, and profile identity are retained for the rehearsal report.
+
+`verify_nebius.py` records a bounded synthetic rehearsal, requires an accepted model policy and at least one policy-guided cut, checks black-camera recovery and manual override, and decodes the OBS recording. It saves `.runtime/nebius-<profile>-acceptance.json`; `--preview-only` skips OBS. Reports and recordings stay local.
+
+Both profiles passed on 29 September 2026: three accepted policies and four policy-guided cuts per rehearsal. Final Kimi calls took about 3.5 seconds and MiniMax calls 4.0–5.5 seconds; an earlier cold Kimi call took 22.7 seconds. Recovery and manual override passed with each profile. See [full measured results and limits](VALIDATION.md).
+
+Flower 1.39.0 separately requests conversation titles using a hardcoded `openai/gpt-5-nano` model. The provided Nebius deployments reject that model with a nonfatal 404. Successful director responses are verified by their own model identity, response ID, and accepted policy events; title errors do not indicate that Kimi or MiniMax inference failed.
 
 ## Runtime details
 

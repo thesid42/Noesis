@@ -115,6 +115,10 @@ class DirectorController:
         }
         self._override_epoch = 0
         self._pending: PendingRequest | None = None
+        self._editorial_pending: PendingRequest | None = None
+        self._editorial_next_mono = 0.0
+        self._editorial_policy: dict[str, Any] | None = None
+        self._last_model_result: dict[str, Any] | None = None
         self._request_sequence = 0
         self._seen_decisions: deque[str] = deque(maxlen=512)
         self._seen_decision_set: set[str] = set()
@@ -136,6 +140,10 @@ class DirectorController:
             "rejected_proposals": 0,
             "model_timeouts": 0,
             "last_recovery_ms": None,
+            "editorial_requests": 0,
+            "editorial_policies": 0,
+            "editorial_timeouts": 0,
+            "policy_guided_cuts": 0,
         }
         self._last_error: str | None = None
         self._obs_stop_pending = False
@@ -293,9 +301,10 @@ class DirectorController:
                         shot_age = self._session["time_s"] - self._program["last_cut_s"]
                         if (
                             now - self._speaker_candidate_since >= self.speaker_confirm_s
-                            and shot_age >= self.min_shot_s
+                            and shot_age >= self._effective_min_shot(now)
                         ):
-                            baseline = (candidate, "Sustained speaker evidence; local directing baseline.")
+                            baseline = (candidate, "Sustained overlap; applying the model's room-view policy." if candidate == "corner"
+                                        else "Sustained speaker evidence; local directing baseline.")
                     else:
                         self._speaker_candidate = None
                         self._speaker_candidate_since = 0.0
@@ -494,7 +503,9 @@ class DirectorController:
             "status": status,
             "transport": "application-managed HTTP broker",
             **({"model": self.model_name} if self.model_name else {}),
-            "model_status": "configured_not_verified" if self.model_name else "not_configured",
+            "model_status": "verified" if self._last_model_result else "configured_not_verified" if self.model_name else "not_configured",
+            "editorial_policy": self._public_editorial_policy(now),
+            "last_model_result": copy.deepcopy(self._last_model_result),
             "decision_modes": decision_modes,
             **({"error": "Flower AgentApp heartbeats are stale or unavailable."} if status != "connected" else {}),
             "agents": agents,
@@ -639,7 +650,9 @@ class DirectorController:
                 self._unhealthy_since.clear()
                 self._reported_manual_faults.clear()
                 self._metrics.update(cuts=0, fallbacks=0,
-                                     rejected_proposals=0, model_timeouts=0, last_recovery_ms=None)
+                                     rejected_proposals=0, model_timeouts=0, last_recovery_ms=None,
+                                     editorial_requests=0, editorial_policies=0, editorial_timeouts=0, policy_guided_cuts=0)
+                self._last_model_result = None
                 self._events.clear()
                 self._add_event("session_started", "operator", f"Started {input_mode} session in {output_mode} mode.")
         await self.tick()
@@ -805,6 +818,7 @@ class DirectorController:
                         raise ControllerError(409, "Cannot manually select an unavailable camera.")
                 self._manual_latched = True
                 self._override_epoch += 1
+                self._clear_editorial_locked()
                 self._cancel_pending("Manual override latched; outstanding director work was discarded.")
                 self._mode = "manual"
                 self._speaker_candidate = None
@@ -823,6 +837,7 @@ class DirectorController:
                     raise ControllerError(409, "Resume Autopilot requires a running session.")
                 self._manual_latched = False
                 self._override_epoch += 1
+                self._clear_editorial_locked()
                 self._mode = self._mode_for(self._flower_snapshot(time.monotonic()))
                 self._cancel_pending("Autopilot resumed; fresh evidence is required.")
                 self._speaker_candidate = None
@@ -951,6 +966,115 @@ class DirectorController:
                 "recent_events": list(reversed(copy.deepcopy(list(self._events)[-12:]))),
             }
 
+    def _editorial_agent_live(self, agent_id: str, now: float) -> bool:
+        agent = self._agents.get(agent_id, {})
+        return (agent.get("role") == "director" and agent.get("decision_mode") == "llm"
+                and now - self._agent_seen_mono.get(agent_id, 0.0) <= self.heartbeat_ttl_s)
+
+    def _active_editorial_policy(self, now: float) -> dict[str, Any] | None:
+        policy = self._editorial_policy
+        if policy and (
+            self._session["status"] != "running" or self._manual_latched
+            or policy["session_id"] != self._session["id"] or policy["epoch"] != self._session["epoch"]
+            or policy["override_epoch"] != self._override_epoch or now >= policy["expires_mono"]
+            or not self._editorial_agent_live(policy["agent_id"], now)
+        ):
+            self._editorial_policy = None
+            return None
+        return policy
+
+    def _public_editorial_policy(self, now: float) -> dict[str, Any] | None:
+        policy = self._active_editorial_policy(now)
+        if not policy:
+            return None
+        return {**{key: value for key, value in policy.items() if key != "expires_mono"},
+                "expires_in_ms": max(0, int((policy["expires_mono"] - now) * 1000))}
+
+    def _effective_min_shot(self, now: float) -> float:
+        policy = self._active_editorial_policy(now)
+        return max(self.min_shot_s, policy["min_shot_s"]) if policy else self.min_shot_s
+
+    def _clear_editorial_locked(self) -> None:
+        self._editorial_pending = None
+        self._editorial_policy = None
+        self._editorial_next_mono = 0.0
+
+    async def editorial_request(self) -> dict[str, Any] | None:
+        """Lease a slow policy request without delaying the live camera loop."""
+        async with self._lock:
+            now = time.monotonic()
+            if self._session_lock.locked() or self._session["status"] != "running" or self._manual_latched:
+                return None
+            if not any(self._editorial_agent_live(agent_id, now) for agent_id in self._agents):
+                return None
+            pending = self._editorial_pending
+            if pending and now >= pending.deadline_mono:
+                self._editorial_pending = None
+                self._metrics["editorial_timeouts"] += 1
+                self._add_event("editorial_timeout", "model", "Editorial request expired; local rules continue.")
+                self._editorial_next_mono = now + 5.0
+                pending = None
+            if pending is None:
+                if now < self._editorial_next_mono:
+                    return None
+                reports = self._recent_camera_observations(now)
+                if len(reports) < 4:
+                    return None
+                pending = PendingRequest(
+                    request_id=f"policy-{uuid.uuid4().hex[:16]}", session_id=str(self._session["id"]),
+                    epoch=self._session["epoch"], override_epoch=self._override_epoch,
+                    observation_revision=self._revision(self._latest_media), issued_mono=now,
+                    deadline_mono=now + 30.0, candidate_camera_id=None,
+                )
+                self._editorial_pending = pending
+                self._editorial_next_mono = now + 10.0
+                self._metrics["editorial_requests"] += 1
+                self._add_event("editorial_request", "model", "Requested bounded shot pacing and overlap policy; live switching continues.")
+            return {
+                "request_id": pending.request_id, "session_id": pending.session_id,
+                "epoch": pending.epoch, "override_epoch": pending.override_epoch,
+                "observation_revision": pending.observation_revision,
+                "deadline_remaining_ms": max(0, int((pending.deadline_mono - now) * 1000)),
+                "program_camera_id": self._program["camera_id"],
+                "cameras": [self._compact_camera(c) for c in self._camera_map(self._latest_media).values()],
+                "camera_observations": self._recent_camera_observations(now),
+                "recent_events": list(reversed(copy.deepcopy(list(self._events)[-8:]))),
+            }
+
+    async def accept_editorial_policy(self, body: dict[str, Any]) -> dict[str, Any]:
+        async with self._lock:
+            now = time.monotonic()
+            pending = self._editorial_pending
+            if (self._session_lock.locked() or self._session["status"] != "running" or self._manual_latched
+                    or not self._editorial_agent_live(body.get("agent_id", ""), now)):
+                raise ControllerError(409, "Editorial policies require an active session and live model director.")
+            if pending is None or body.get("request_id") != pending.request_id or now >= pending.deadline_mono:
+                raise ControllerError(409, "Editorial policy request is missing, already used, or expired.")
+            if (body.get("session_id") != pending.session_id or pending.session_id != self._session["id"]
+                    or body.get("epoch") != pending.epoch or pending.epoch != self._session["epoch"]
+                    or body.get("override_epoch") != pending.override_epoch or pending.override_epoch != self._override_epoch):
+                raise ControllerError(409, "Editorial policy belongs to an old session or manual override.")
+            hold = body.get("min_shot_s")
+            if (isinstance(hold, bool) or not isinstance(hold, (int, float)) or not 4.0 <= hold <= 8.0
+                    or body.get("overlap_mode") not in {"hold", "wide"}):
+                raise ControllerError(422, "Editorial policy must use a 4–8 second hold and hold/wide overlap mode.")
+            for key in ("policy_id", "response_id", "model", "reason"):
+                if not isinstance(body.get(key), str) or not body[key].strip() or len(body[key]) > 400:
+                    raise ControllerError(422, f"Editorial policy requires a bounded nonempty {key}.")
+            if self.model_name and body["model"] != self.model_name:
+                raise ControllerError(409, "Editorial policy model does not match this session's configured provider.")
+            self._editorial_policy = {key: body[key] for key in (
+                "agent_id", "session_id", "epoch", "override_epoch", "policy_id", "min_shot_s",
+                "overlap_mode", "reason", "model", "response_id", "latency_ms", "input_tokens", "output_tokens",
+            )}
+            self._editorial_policy["expires_mono"] = now + 20.0
+            self._editorial_pending = None
+            self._cancel_pending("New editorial policy superseded the pending camera request.")
+            self._last_model_result = {key: body[key] for key in ("model", "response_id", "latency_ms", "input_tokens", "output_tokens")}
+            self._metrics["editorial_policies"] += 1
+            self._add_event("editorial_policy_accepted", "model", f"{body['model']}: {hold:g}s minimum shots, {body['overlap_mode']} during overlap. {body['reason']}")
+            return {"ok": True, "policy": self._public_editorial_policy(now)}
+
     async def accept_proposal(self, body: dict[str, Any]) -> dict[str, Any]:
         async with self._lock:
             self._metrics["rejected_proposals"] += 0
@@ -981,8 +1105,11 @@ class DirectorController:
             if not target_healthy:
                 self._reject_proposal("Proposal target is currently unhealthy.", body, target)
                 raise ControllerError(409, "Proposal target is currently unhealthy.")
+            if self._active_editorial_policy(time.monotonic()) and target != self._speaker_camera(self._camera_map(self._latest_media)):
+                self._reject_proposal("Proposal conflicts with current speaker evidence or editorial overlap policy.", body, target)
+                raise ControllerError(409, "Proposal conflicts with current speaker evidence or editorial overlap policy.")
             shot_age = self._session["time_s"] - self._program["last_cut_s"]
-            if target != self._program["camera_id"] and shot_age < self.min_shot_s:
+            if target != self._program["camera_id"] and shot_age < self._effective_min_shot(time.monotonic()):
                 self._reject_proposal("Proposal violates the minimum shot duration.", body, target)
                 raise ControllerError(409, "Proposal violates the minimum shot duration.")
             reason = self._reason(body.get("reason"), "Director selected a camera.")
@@ -991,7 +1118,7 @@ class DirectorController:
             # write occurs for internal camera cuts; /program reads this shared
             # selection directly.
             if target != self._program["camera_id"]:
-                self._set_program_locked(target, reason, source="director")
+                self._set_program_locked(target, reason, source="director", decision_source=body.get("decision_source", "rules"))
             else:
                 self._add_event("director_hold", "director", reason, target)
             return {
@@ -1147,12 +1274,19 @@ class DirectorController:
                     return False
                 if target == self._program["camera_id"]:
                     return False
+                if source == "baseline":
+                    # Policy can change while this operation waits for the action
+                    # lock. Re-evaluate both target and pacing at commit time.
+                    if target != self._speaker_camera(self._camera_map(self._latest_media)):
+                        return False
+                    if self._session["time_s"] - self._program["last_cut_s"] < self._effective_min_shot(time.monotonic()):
+                        return False
                 self._set_program_locked(target, reason, source=source, fallback=fallback)
                 if self._pending:
                     self._cancel_pending("A deterministic camera change superseded the director request.")
                 return True
 
-    def _set_program_locked(self, camera_id: str, reason: str, *, source: str, fallback: bool = False) -> None:
+    def _set_program_locked(self, camera_id: str, reason: str, *, source: str, fallback: bool = False, decision_source: str | None = None) -> None:
         prior = self._program["camera_id"]
         if prior == camera_id:
             return
@@ -1162,6 +1296,7 @@ class DirectorController:
             "scene": "NOESIS_Program",
             "reason": reason,
             "last_cut_s": now_s,
+            "decision_source": decision_source or source,
         }
         self._metrics["cuts"] += 1
         if fallback:
@@ -1175,8 +1310,14 @@ class DirectorController:
             reason,
             camera_id,
         )
+        policy = self._active_editorial_policy(time.monotonic()) if source in {"director", "baseline"} else None
+        if policy:
+            self._metrics["policy_guided_cuts"] += 1
+            self._program["editorial_policy_id"] = policy["policy_id"]
+            self._add_event("editorial_policy_applied", "model_policy", f"Applied {policy['min_shot_s']:g}s shot pacing / {policy['overlap_mode']} overlap policy to a current-evidence cut.", camera_id)
 
     def _clear_media_evidence_locked(self) -> None:
+        self._clear_editorial_locked()
         self._revision_history.clear()
         self._revision_order.clear()
         self._camera_observations.clear()
@@ -1250,6 +1391,9 @@ class DirectorController:
             candidates.append((energy, camera_id))
         if not candidates:
             return None
+        policy = self._active_editorial_policy(time.monotonic())
+        if policy and len(candidates) > 1:
+            return "corner" if policy["overlap_mode"] == "wide" and self._is_healthy(cameras.get("corner"), running=True) else None
         candidates.sort(key=lambda item: (-item[0], CAMERA_IDS.index(item[1])))
         return candidates[0][1]
 

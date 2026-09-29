@@ -23,6 +23,8 @@ Shared contract for the advisor/executor build. Root coordinates integration. Py
 - POST `/api/agents/observations`: camera-agent report including camera_id and source observation revision.
 - POST `/api/agents/proposal`: validated director proposal. Request deadline/ID originate at controller.
 - GET `/api/agents/request`: current pending director request or null, including request_id, session_id, epoch, override_epoch, observation_revision, state and deadline_remaining_ms.
+- GET `/api/agents/editorial`: one leased policy request or null. Requires a live LLM director and recent camera-agent evidence. Includes the controller-issued request/session/override metadata, current camera evidence, and a 30-second deadline.
+- POST `/api/agents/editorial`: `{agent_id, request_id, session_id, epoch, override_epoch, policy_id, min_shot_s, overlap_mode, reason, model, response_id, latency_ms, input_tokens, output_tokens}`. Strictly validates a completed model result; `min_shot_s` is 4–8 and `overlap_mode` is `hold|wide`. Returns `{ok, policy}`. Accepted policy lasts 20 seconds and is rechecked against current evidence at each cut.
 
 Mutations return latest snapshot or a documented `{ok,...}` object; failures use normal HTTP error status and `{detail}`. Credentials read from environment, never returned in API responses. Bind local host by default.
 
@@ -32,15 +34,15 @@ Mutations return latest snapshot or a documented `{ok,...}` object; failures use
 
 `mode`: `autopilot|manual|degraded` (no Flower means degraded deterministic directing; idle may be autopilot).
 
-`program`: `{camera_id, scene, reason, last_cut_s}`.
+`program`: `{camera_id, scene, reason, last_cut_s, decision_source, editorial_policy_id?}`. Rules camera selection and model editorial policy are separate provenance fields.
 
 `cameras`: list of `{id, name, participant, healthy, status, speaking, energy, quality, age_ms, frame_url}`. IDs: `closeup1`, `closeup2`, `closeup3`, `closeup4`, `corner`; participant mapping A,C,D,B respectively. `slate` is last-resort program target.
 
 `obs`: `{connected, status, error?, recording, stop_pending, output_path?}`. A disconnected recording state is unavailable, not proof of a stopped recorder. `stop_pending` keeps Stop retryable after reconnecting and blocks a new session until acknowledgment.
 
-`flower`: `{status, transport, model?, error?, agents: [{agent_id, role, runtime, run_id?, camera_id?, age_ms, healthy}]}`. Never claim Flower running from local fallback code.
+`flower`: `{status, transport, model?, model_status, editorial_policy?, last_model_result?, decision_modes, error?, agents: [{agent_id, role, runtime, decision_mode, run_id?, camera_id?, age_ms, healthy}]}`. Model status distinguishes configured from verified; last result contains only model identity, response ID, elapsed latency, and token counts. Never claim Flower running from local fallback code.
 
-`metrics`: `{cuts, fallbacks, rejected_proposals, model_timeouts, last_recovery_ms?}`. Reset at each successful session start. `last_recovery_ms` measures detector declaration to controller selection; injection-to-selection timing is measured independently by the rehearsal script and includes detector debounce.
+`metrics`: `{cuts, fallbacks, rejected_proposals, model_timeouts, last_recovery_ms?, editorial_requests, editorial_policies, editorial_timeouts, policy_guided_cuts}`. Reset at each successful session start. `model_timeouts` is the legacy fast director-request timeout counter; `editorial_timeouts` tracks the separate model-policy lease. `last_recovery_ms` measures detector declaration to controller selection; injection-to-selection timing is measured independently by the rehearsal script and includes detector debounce.
 
 `events`: bounded list (newest first) of `{id, session_id, time_s, kind, source, message, camera_id?}`. The active trace is cleared at each successful session start; export it before beginning another session when retaining a run record.
 
@@ -71,3 +73,5 @@ Provide visibly labeled generated test feeds when AMI is absent, not a fake AMI 
 ## Critical invariants
 
 Local fallback never waits for LLM. Emergency cuts bypass normal minimum hold. Manual override blocks every automatic cut until resume. Replays/seeks invalidate old decisions. Reject malformed, expired, duplicate, wrong-session or wrong-epoch proposals. Only one controller writes to OBS. Confirm actual OBS result. Always label simulated inputs, preview output, and non-Flower fallback honestly.
+
+Nebius profiles are selected at launcher startup. Only SuperLink receives the selected upstream API key; AgentApps use Flower-injected runtime credentials. Profile changes require restarting the owned SuperLink. Policy inference is a separate single-call worker from heartbeat and rules proposals. Manual override, pause, seek, session transitions, director heartbeat loss, or expiry invalidate policy. Keys, `.env`, `ex.txt`, generated FABs, and model test reports stay out of Git.

@@ -9,7 +9,7 @@ An organizer configures the sources and presses Start. The system directs and re
 
 This document covers the product, architecture, Flower integration, AMI test data, implementation sequence, and demo. Performance values are acceptance targets, not guarantees.
 
-**Implementation:** the local controller, dashboard, shared-clock replay adapter, five separate Flower 1.39.0 AgentApps, and the OBS browser-source bridge are built. Start with `start.ps1 -OBS`; operational instructions and measured results are in `README.md` and `docs/VALIDATION.md`. At the user’s request, the Director defaults to model-free rules. Model-backed inference remains optional and unverified. A complete 20-second AMI excerpt now works through OBS with camera changes and non-silent audio. Synthetic failure recovery, manual latch, pause, EOF, and agent-outage fallback are also verified. A longer AMI editorial evaluation and fine A/V alignment remain outstanding.
+**Implementation:** the local controller, dashboard, shared-clock replay adapter, five separate Flower 1.39.0 AgentApps, and the OBS browser-source bridge are built. Start with `start.ps1 -OBS`; add `-ModelProfile kimi` or `-ModelProfile minimax` for Nebius inference through Flower. Both model profiles passed recorded synthetic rehearsals on 29 September 2026. The default remains model-free rules. The model chooses bounded shot pacing and overlap policy asynchronously; current camera selection and health recovery stay local. A complete 20-second AMI excerpt also works through OBS with camera changes and non-silent audio. A longer AMI editorial evaluation and fine A/V alignment remain outstanding. Operational instructions and measured results are in `README.md` and `docs/VALIDATION.md`.
 
 ## 1. Problem and outcome
 
@@ -73,9 +73,9 @@ A camera agent need not call a language model on every observation. Numerical pe
 
 **Fast path:** check capture/decode health approximately every 100–250 ms. If the on-air source becomes unusable, select a healthy fallback immediately. Initial recovery target: within 1 second of injected fault onset. Measure it; it is not a platform guarantee.
 
-**Editorial path:** request a Director decision on a sustained speaker change, significant shot-quality change, or a periodic low-rate refresh. Use at most one outstanding decision per broadcast session. Coalesce changes into the latest snapshot; discard obsolete responses. Start with a 2-second request deadline and measure whether the available model can meet it. A timeout activates the deterministic directing baseline, not an unbounded queue.
+**Editorial path:** fast rules proposals follow current camera-agent evidence. A separate Director worker requests a model policy roughly every 10 seconds, with at most one call in flight, a 25-second SDK timeout, and a 30-second controller lease. Completed, schema-valid replies choose minimum shot duration (4–8 seconds) and overlap behavior (`hold` or `wide`) for a 20-second policy. Current evidence is checked again at camera-cut commit. Manual override, pause/seek/session transitions, director heartbeat loss, or expiry remove the policy. Timeout or rejection leaves local directing operational. The SDK timeout covers HTTP operations; the controller lease rejects late replies using its own monotonic clock.
 
-The model should add editorial judgment: avoid cutting for a short interruption, hold an appropriate shot, select wide during overlap, or weigh an obstructed speaker view against a clear contextual view. Evaluate the editorial contribution against the same system using only VAD, hold rules, and health checks.
+The implemented model can lengthen shots to avoid short interruptions and select wide or hold behavior during overlap. It receives compact observations, not frames, audio, or transcripts, so semantic visual judgments remain future work. The recorded rehearsals prove policy execution and control safety; editorial improvement over the same system using only VAD, hold rules, and health checks still needs evaluation.
 
 ## 4. Flower integration
 
@@ -397,7 +397,7 @@ Add these in priority order only after the autonomous directing loop is reliable
 ## 13. Completion checklist
 
 - [x] Flower 1.39.0 and five separate AgentApp runs proved through the application-managed HTTP broker; real rules-director cuts recorded.
-- [ ] Optional model inference verified after credentials are configured.
+- [x] Nebius Kimi and MiniMax inference verified through Flower, including accepted policies, policy-guided camera cuts, OBS recording, fault recovery, and manual override.
 - [x] Complete 20-second prepared AMI excerpt acquired; source hashes and derivative decoding recorded.
 - [ ] Longer 2–3 minute AMI segment acquired and fine A/V alignment measured.
 - [ ] Weak ES2002a microphone identified; any lapel replacement mapped and measured.
@@ -410,4 +410,4 @@ Add these in priority order only after the autonomous directing loop is reliable
 - [x] Generated-input demo rehearsed and a backup OBS recording saved; manual latch, pause, EOF, agent outage, and external OBS stop tested.
 - [ ] Full real-footage demo rehearsed after AMI acquisition and synchronization checks.
 
-Current local evidence is in `docs/VALIDATION.md`: 30 passing tests and a 25.57-second synthetic recording with one Flower director cut. A single black-frame trial selected fallback in 1,016 ms; repeated visible-output latency and the table's editorial/A/V targets are still unmeasured.
+Current local evidence is in `docs/VALIDATION.md`: 40 passing regression tests and successful Kimi and MiniMax synthetic recordings of 38.83 and 39.23 seconds. Each model's rehearsal accepted three policies and applied policy on four cuts. Single black-frame trials selected fallback in 1,015 and 969 ms respectively; repeated visible-output latency and the table's editorial/A/V targets are still unmeasured.

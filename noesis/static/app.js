@@ -136,7 +136,7 @@
     if (!refs.start.hasAttribute('aria-busy')) refs.start.disabled = !idle || stopPending;
     if (!refs.pause.hasAttribute('aria-busy')) refs.pause.disabled = !active;
     if (!refs.stop.hasAttribute('aria-busy')) refs.stop.disabled = !active && !stopPending;
-    if (!refs.resume.hasAttribute('aria-busy')) refs.resume.disabled = !manuallyLatched;
+    if (!refs.resume.hasAttribute('aria-busy')) refs.resume.disabled = !manuallyLatched || status !== 'running';
     refs.pause.innerHTML = status === 'paused' ? '<span class="button-icon" aria-hidden="true">▶</span> Resume' : '<span class="button-icon" aria-hidden="true">Ⅱ</span> Pause';
     refs.audioToggle.disabled = !(latestState && latestState.data && latestState.data.ami_available && session && session.input_mode === 'ami' && session.status === 'running') || audioMissing;
     refs.audioToggle.title = refs.audioToggle.disabled ? 'Audio preview is available when an AMI audio mix is ready.' : (audioEnabled ? 'Disable audio in this preview' : 'Enable audio in this preview');
@@ -148,6 +148,11 @@
     refs.modeTitle.textContent = labels[mode] || 'Mode not reported';
     const flower = state.flower || {};
     const obs = state.obs || {};
+    if (['idle', 'stopped'].includes(state.session && state.session.status) && !obs.stop_pending) {
+      refs.modeTitle.textContent = 'Ready to start';
+      refs.modeDetail.textContent = 'Start a session to enable automatic directing';
+      return;
+    }
     let detail = 'Controller is waiting for session state';
     if (mode === 'autopilot') detail = 'Automatic shot selection is active';
     else if (mode === 'manual') detail = 'Camera selection is latched until Resume Autopilot';
@@ -243,7 +248,11 @@
     const flower = state.flower || {};
     const agents = Array.isArray(flower.agents) ? flower.agents : (latestAgentSnapshot && Array.isArray(latestAgentSnapshot.agents) ? latestAgentSnapshot.agents : []);
     const flowerStatus = String(flower.status || (latestAgentSnapshot && latestAgentSnapshot.status) || 'not reported');
-    const decisionMode = flower.decision_modes && flower.decision_modes.director === 'llm' ? 'model-assisted decisions' : 'rules mode · no model calls';
+    const policy = flower.editorial_policy;
+    const decisionMode = flower.decision_modes && flower.decision_modes.director === 'llm'
+      ? policy ? `model policy active · ${policy.min_shot_s}s shots · ${policy.overlap_mode} on overlap`
+        : flower.model_status === 'verified' ? `model verified · ${state.session && state.session.status === 'running' ? 'local rules active' : 'replay inactive'}` : 'model configured · awaiting verified policy'
+      : 'rules mode · no model calls';
     refs.crewSummary.textContent = flowerStatus === 'not reported' ? 'No Flower status reported' : `${flowerStatus} · ${decisionMode}${flower.model ? ` · ${flower.model}` : ''}`;
     const hasHealthy = agents.some((agent) => agent.healthy === true);
     const isUnavailable = /unavailable|offline|stopped|error|degraded/i.test(flowerStatus);
