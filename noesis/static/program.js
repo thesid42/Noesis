@@ -78,7 +78,10 @@
       setText(refs.audioLabel, audioEnabled ? 'Audio on' : 'Enable program audio');
     }
     if (input === 'ami') {
-      setText(refs.input, amiReady ? 'AMI PROJECT · ES2002a · CC BY 4.0 · EDITED REPLAY' : 'AMI REPLAY · AUDIO UNAVAILABLE');
+      const credits = String((state.data && state.data.credits) || '');
+      const sessionMatch = credits.match(/session\s+([A-Za-z0-9_-]+)/i);
+      const sessionLabel = sessionMatch ? ` · ${sessionMatch[1]}` : '';
+      setText(refs.input, amiReady ? `AMI PROJECT${sessionLabel} · CC BY 4.0 · EDITED REPLAY` : 'AMI REPLAY · AUDIO UNAVAILABLE');
     } else if (input === 'synthetic') {
       setText(refs.input, 'SYNTHETIC TEST FEEDS');
     } else {

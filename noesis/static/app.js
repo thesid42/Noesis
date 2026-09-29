@@ -338,21 +338,16 @@
     if (selected && [...refs.modelProfile.options].some((option) => option.value === selected)) refs.modelProfile.value = selected;
     refs.modelProfile.disabled = profileBusy || !options.some((item) => item.available === true);
     refs.modelProfile.setAttribute('aria-busy', String(profileBusy));
-    const flower = state.flower || {};
-    const verification = flower.model_status === 'verified' ? 'VERIFIED' : flower.model_status === 'configured_not_verified' ? 'NOT VERIFIED' : 'NOT REPORTED';
-    refs.modelProfileStatus.textContent = profileBusy ? 'Switching profile…' : `${verification} · fresh AI response required after a switch`;
     const cameraModel = models.roles && models.roles.camera;
     const separateCamera = cameraModel && cameraModel.provider === 'flower';
     $('model-profile-label').textContent = separateCamera ? 'DIRECTOR + CRITIC' : 'AI PROFILE';
-    if (separateCamera) {
+    refs.modelProfileStatus.textContent = profileBusy ? 'Switching profile…' : '';
+    if (separateCamera && !profileBusy) {
       const reasoning = cameraModel.reasoning_effort === 'none' ? 'reasoning off' : `reasoning ${cameraModel.reasoning_effort || 'default'}`;
-      const cameraVerified = cameraModel.verification_status === 'verified' ? 'VERIFIED' : 'NOT VERIFIED';
-      refs.modelProfileStatus.textContent = `Cameras: ${cameraModel.model} via Flower · ${reasoning} · ${cameraVerified}`;
+      refs.modelProfileStatus.textContent = `Cameras: ${cameraModel.model} via Flower · ${reasoning}`;
     }
-    const roleStates = models.roles ? Object.values(models.roles).map((role) => role.verification_status) : [];
-    const allVerified = roleStates.length > 0 && roleStates.every((status) => status === 'verified');
-    refs.modelVerificationStatus.textContent = roleStates.length ? (allVerified ? 'ALL ROLES VERIFIED' : roleStates.some((status) => status === 'verified') ? 'PARTIALLY VERIFIED' : 'NOT VERIFIED') : verification;
-    refs.modelVerificationStatus.dataset.state = allVerified ? 'verified' : 'pending';
+    refs.modelVerificationStatus.textContent = '';
+    refs.modelVerificationStatus.dataset.state = '';
   }
 
   function roleRecordKey(record) {
