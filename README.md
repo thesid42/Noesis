@@ -4,7 +4,7 @@
 
 An autonomous production controller for small panel discussions. Five synchronized camera views feed one continuous program. Camera agents report speaker/health evidence, a director proposes shots, and a local controller validates every action and keeps directing when agents are unavailable.
 
-The runnable demo includes a control room, generated test feeds, an AMI replay adapter, real Flower 1.39.0 AgentApps, and an OBS WebSocket v5 bridge. **The default Flower director uses rules and makes no model calls. No model credentials are needed.**
+The runnable demo includes a control room, generated test feeds, an AMI replay adapter, real Flower 1.39.0 AgentApps, and an OBS WebSocket v5 bridge. 
 
 ## How it works
 
