@@ -130,12 +130,6 @@ The speech preparation command downloads the small English Whisper model once in
 
 For local media preparation and OBS setup commands, see [Flower and demo setup](docs/FLOWER.md). There is no JavaScript build step.
 
-## Hackathon delivery checklist
-
-Requirements were checked against the organizer's public requirements JSON on 29 September 2026. Required deliverables include collaborative Flower Agents on SuperGrid, an AgentApp published to Flower Hub, a team registration form with a team description and GitHub repository, and a 3–5 minute demo. Keep each task at or below five minutes. Endeavor participation is optional.
-
-The hosted SuperGrid proof from run `96528684490097715` completed with six accepted AI role responses and a Director choice of Closeup3; the rehearsal passed manual override and recovered from a source fault in 984 ms. This is historical hosted-mode proof, not evidence that the default local runtime is using SuperGrid. The local AgentApp package has been built and secret-checked, but not published to Flower Hub. The team form, final description, repository submission, and demo recording also remain submission tasks. A local Flower run alone does not satisfy the event's hosted SuperGrid requirement.
-
 ## Media and attribution
 
 The AMI ES2002a adapter uses four participant close-ups, one room view, four isolated headset channels for measured speaker evidence, and the continuous headset mix for program audio. It is replay of recorded footage, not live capture. The latest smoke test decoded five healthy feeds and finalized at EOF; see [validation status](docs/VALIDATION.md) for duration and audio measurements. The longer 2–3 minute editorial evaluation and fine lip-sync measurement remain outstanding.
