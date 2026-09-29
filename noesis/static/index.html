@@ -46,13 +46,6 @@
             <label class="select-field model-select-field"><span>AI PROFILE</span><select id="model-profile" aria-label="AI model profile" disabled><option value="">Loading profiles…</option></select></label>
             <span class="profile-status" id="model-profile-status">Waiting for model configuration</span>
           </div>
-          <div class="session-actions">
-            <button class="button button-primary" id="start-session" type="button"><span class="button-icon" aria-hidden="true">▶</span> Start session</button>
-            <button class="button button-secondary" id="pause-session" type="button" disabled><span class="button-icon" aria-hidden="true">Ⅱ</span> Pause</button>
-            <button class="button button-quiet" id="stop-session" type="button" disabled>Stop</button>
-            <span class="action-divider" aria-hidden="true"></span>
-            <button class="button button-resume" id="resume-autopilot" type="button" disabled><span aria-hidden="true">↻</span> Resume autopilot</button>
-          </div>
         </section>
 
         <div class="main-grid">
@@ -82,6 +75,16 @@
               </div>
             </section>
 
+            <section class="panel session-actions-panel" aria-label="Session controls">
+              <div class="session-actions">
+                <button class="button button-primary" id="start-session" type="button"><span class="button-icon" aria-hidden="true">▶</span> Start session</button>
+                <button class="button button-secondary" id="pause-session" type="button" disabled><span class="button-icon" aria-hidden="true">Ⅱ</span> Pause</button>
+                <button class="button button-quiet" id="stop-session" type="button" disabled>Stop</button>
+                <span class="action-divider" aria-hidden="true"></span>
+                <button class="button button-resume" id="resume-autopilot" type="button" disabled><span aria-hidden="true">↻</span> Resume autopilot</button>
+              </div>
+            </section>
+
             <section class="panel sources-panel" aria-labelledby="sources-heading">
               <div class="section-heading sources-heading">
                 <div><p class="eyebrow">INPUT MONITOR</p><h2 id="sources-heading">Camera sources <span class="heading-count" id="source-count">5</span></h2></div>
@@ -91,16 +94,20 @@
                 <div class="source-loading"><span class="loading-pulse"></span> Connecting to camera sources…</div>
               </div>
             </section>
+
+            <section class="panel agent-panel" aria-labelledby="agent-panel-heading">
+              <div class="section-heading compact-heading"><div><p class="eyebrow">FLOWER AGENTS</p><h2 id="agent-panel-heading">Agent heartbeat</h2></div></div>
+              <div class="agent-list" id="agent-list"><div class="empty-inline">No agent heartbeat received yet.</div></div>
+            </section>
           </div>
 
           <aside class="side-column">
             <section class="panel crew-panel" aria-labelledby="crew-heading">
               <div class="section-heading compact-heading"><div><p class="eyebrow">DISTRIBUTED CREW</p><h2 id="crew-heading">Agent activity</h2></div><span class="crew-state" id="crew-state">CHECKING</span></div>
               <div class="crew-summary" id="crew-summary"><span class="crew-avatar crew-avatar-director">D</span><div><strong>Crew runtime</strong><span id="flower-summary">Waiting for agent snapshot</span></div></div>
-              <div class="grid-run" id="grid-run" hidden aria-live="polite"><span class="grid-run-label" id="grid-run-label">FLOWER RUN</span><span class="grid-run-id" id="grid-run-id">No run ID reported</span><span class="grid-run-status" id="grid-run-status">STATUS NOT REPORTED</span></div>
-              <div class="provenance-heading"><span>AI MODEL RESPONSES</span><span id="model-verification-status">NOT VERIFIED</span></div>
+              <div class="grid-run" id="grid-run" hidden aria-live="polite"><span class="grid-run-label" id="grid-run-label"></span><span class="grid-run-id" id="grid-run-id"></span><span class="grid-run-status" id="grid-run-status"></span></div>
+              <div class="provenance-heading"><span>AI MODEL RESPONSES</span><span id="model-verification-status"></span></div>
               <div class="ai-provenance" id="ai-provenance" aria-label="Latest model inference status"><div class="empty-inline">Waiting for configured AI roles.</div></div>
-              <div class="agent-list" id="agent-list"><div class="empty-inline">No agent heartbeat received yet.</div></div>
               <div class="trace-heading"><span>RECENT TRACE</span><span id="trace-count">—</span></div>
               <ol class="trace-list" id="trace-list" aria-live="polite"><li class="empty-trace">Trace events will appear as the controller reports them.</li></ol>
             </section>
