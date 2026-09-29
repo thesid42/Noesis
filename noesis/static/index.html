@@ -3,7 +3,8 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#0b111a">
+    <meta name="theme-color" content="#f5f0e8">
+    <script>try{document.documentElement.dataset.theme=localStorage.getItem('noesis-theme')||'day'}catch(e){}</script>
     <title>Noesis · Control room</title>
     <link rel="stylesheet" href="/static/styles.css?v=ai-profile-audio-20260929">
     <script src="/static/app.js?v=ai-profile-audio-20260929" defer></script>
@@ -17,6 +18,7 @@
         </a>
         <div class="topbar-right">
           <a class="program-link" href="/program" target="_blank" rel="noreferrer">Open program output <span aria-hidden="true">↗</span></a>
+          <button class="theme-toggle" id="theme-toggle" type="button" title="Toggle day / night view"><span class="theme-toggle-icon" id="theme-toggle-icon">☀</span></button>
           <span class="connection-indicator" id="connection-indicator" data-state="connecting"><span class="status-dot"></span><span id="connection-label">Connecting</span></span>
           <button class="icon-button credits-trigger" id="credits-open" type="button" aria-haspopup="dialog" aria-controls="credits-dialog" title="Source credits and data notes">ⓘ <span>Credits</span></button>
         </div>
@@ -27,7 +29,7 @@
           <div>
             <p class="eyebrow">LIVE PRODUCTION</p>
             <h1 id="page-title">Control room</h1>
-            <p class="page-subtitle">One continuous program. Five sources. A crew that stays on air.</p>
+            <p class="page-subtitle">Where perception meets production. Every angle, every moment is observed and prioritized.</p>
           </div>
           <div class="mode-card" id="mode-card" data-mode="unknown" aria-live="polite">
             <span class="mode-orb" aria-hidden="true"></span>
