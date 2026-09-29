@@ -390,10 +390,7 @@
       const details = [];
       if (assignment && assignment.model && !accepted) details.push(`Configured: ${assignment.model}`);
       if (accepted) {
-        if (finite(result.latency_ms)) details.push(`${Math.max(0, Math.round(result.latency_ms))} ms`);
-        if (finite(result.output_tokens)) details.push(`${Math.max(0, Math.round(result.output_tokens))} output tokens`);
-        if (typeof result.model === 'string') details.push(result.model);
-        if (typeof result.response_id === 'string') details.push(`ID ${result.response_id.slice(0, 14)}`);
+        // Structured response fields shown instead; no time/tokens/model line.
       } else if (failed) {
         if (finite(result.http_status)) details.push(`HTTP ${Math.round(result.http_status)}`);
         else if (typeof result.error_class === 'string') details.push(result.error_class.slice(0, 40));
@@ -404,10 +401,19 @@
       } else {
         details.push('Waiting for the controller to report this AI role.');
       }
-      if (role.agent === 'critic' && accepted && result.result && typeof result.result.reason === 'string') {
-        details.push(`Critic: ${result.result.reason.slice(0, 160)}`);
+      let responseHtml = '';
+      if (accepted && result.result) {
+        const r = result.result;
+        if (role.decisionRole === 'camera') {
+          responseHtml = `<span class="ai-response-fields">recommendation <b>${escapeHtml((r.recommendation || '?'))}</b> confidence <b>${typeof r.confidence === 'number' ? r.confidence.toFixed(2) : '?'}</b></span><span class="ai-response-reason">reason: ${escapeHtml((r.reason || '').slice(0, 200))}</span>`;
+        } else if (role.agent === 'critic') {
+          responseHtml = `<span class="ai-response-fields">assessment <b>${escapeHtml((r.assessment || '?'))}</b></span><span class="ai-response-reason">reason: ${escapeHtml((r.reason || '').slice(0, 200))}</span>`;
+        } else if (role.agent === 'director') {
+          responseHtml = `<span class="ai-response-fields">action <b>${escapeHtml((r.action || '?'))}</b> camera_id <b>${escapeHtml((r.camera_id || '?'))}</b></span><span class="ai-response-reason">reason: ${escapeHtml((r.reason || '').slice(0, 200))}</span>`;
+        }
       }
-      return `<div class="ai-role-row" data-state="${accepted ? 'verified' : failed ? 'error' : 'pending'}"><span class="ai-role-mark" aria-hidden="true">${accepted ? '✓' : failed ? '!' : '·'}</span><span class="ai-role-copy"><strong>${role.title}</strong><span>${escapeHtml(details.join(' · ') || status)}</span></span><span class="ai-role-state">${status}</span></div>`;
+      const detailsLine = details.length ? `<span>${escapeHtml(details.join(' · '))}</span>` : (!accepted ? `<span>${escapeHtml(status)}</span>` : '');
+      return `<div class="ai-role-row" data-state="${accepted ? 'verified' : failed ? 'error' : 'pending'}"><span class="ai-role-mark" aria-hidden="true">${accepted ? '✓' : failed ? '!' : '·'}</span><span class="ai-role-copy"><span class="ai-role-head"><strong>${role.title}</strong><span class="ai-role-state">${status}</span></span>${detailsLine}${responseHtml}</span></div>`;
     }).join('');
   }
   function renderTrace(state) {

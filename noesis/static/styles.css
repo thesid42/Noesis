@@ -363,6 +363,9 @@ a{color:inherit}
 
 /* ── Ops / integrations panel ───────────────────────────── */
 .ops-panel{padding-bottom:13px}
+.broadcast-panel .broadcast-status{margin:0 15px 7px;color:var(--text);font:600 11px var(--display);letter-spacing:-.1px}
+.broadcast-panel .section-note{margin:0 15px 9px;line-height:1.45}
+.broadcast-panel .transcript-preview{margin:0 15px;color:var(--dim);font-size:9px;line-height:1.5}
 .integration-row{display:flex;align-items:center;gap:9px;padding:0 15px 8px}
 .integration-icon{
   width:24px;height:24px;display:grid;place-items:center;
@@ -503,18 +506,23 @@ a{color:inherit}
 .profile-status { max-width: 235px; color: var(--muted); font: 8px var(--mono); line-height: 1.4; }
 #model-verification-status { color: var(--accent); }
 #model-verification-status[data-state="verified"] { color: var(--green); }
-.provenance-heading { margin: 0 15px 7px; padding: 9px 0 7px; border-top: 1px solid var(--line-soft); display: flex; justify-content: space-between; gap: 7px; color: var(--dim); font: 500 8px var(--mono); letter-spacing: 1px; }
+.provenance-heading { margin: 0 15px 7px; padding: 9px 0 7px; border-top: 1px solid var(--line-soft); display: flex; justify-content: space-between; gap: 7px; color: var(--dim); font: 500 10px var(--mono); letter-spacing: 1px; }
 .ai-provenance { display: grid; gap: 4px; margin: 0 14px 10px; }
-.ai-role-row { min-width: 0; display: grid; grid-template-columns: 16px minmax(0,1fr) auto; align-items: center; gap: 6px; padding: 6px 7px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.ai-role-row { min-width: 0; display: grid; grid-template-columns: 16px minmax(0,1fr); align-items: start; gap: 6px; padding: 6px 7px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.ai-role-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.ai-role-head strong { min-width: 0; }
 .ai-role-row[data-state="verified"] { border-color: rgba(16,185,129,.25); }
 .ai-role-row[data-state="error"] { border-color: rgba(244,63,94,.3); }
 .ai-role-mark { color: var(--dim); font: 12px var(--mono); text-align: center; }
 .ai-role-row[data-state="verified"] .ai-role-mark { color: var(--green); }
 .ai-role-row[data-state="error"] .ai-role-mark { color: var(--red); }
 .ai-role-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.ai-role-copy strong { font: 600 8px var(--display); }
-.ai-role-copy span { overflow: hidden; color: var(--dim); font-size: 7px; line-height: 1.35; text-overflow: ellipsis; }
-.ai-role-state { color: var(--muted); font: 7px var(--mono); letter-spacing: .3px; text-align: right; }
+.ai-role-copy strong { font: 600 11px var(--display); }
+.ai-role-copy span { color: var(--dim); font-size: 10px; line-height: 1.4; }
+.ai-role-state { color: var(--muted); font: 9px var(--mono); letter-spacing: .3px; white-space: nowrap; flex: none; }
+.ai-response-fields { display: block; font: 500 10px var(--mono); color: var(--accent); margin-top: 4px; }
+.ai-response-fields b { color: var(--green); }
+.ai-response-reason { display: block; font-size: 10px; color: var(--dim); margin-top: 2px; line-height: 1.4; }
 .ai-role-row[data-state="verified"] .ai-role-state { color: #6ee7b7; }
 .ai-role-row[data-state="error"] .ai-role-state { color: #fca5a5; }
 .preview-audio-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
