@@ -723,6 +723,22 @@
   refs.audio.volume = Number(refs.audioVolume.value);
   renderModelProfile({});
   renderAudioControls({});
+
+  // ── Theme toggle (day / night) ─────────────────────────
+  const themeBtn = $('theme-toggle');
+  const themeIcon = $('theme-toggle-icon');
+  if (themeBtn && themeIcon) {
+    function applyTheme(t) {
+      document.documentElement.dataset.theme = t;
+      themeIcon.textContent = t === 'night' ? '☽' : '☀';
+      document.querySelector('meta[name="theme-color"]').content = t === 'night' ? '#09090b' : '#f5f0e8';
+      try { localStorage.setItem('noesis-theme', t); } catch(e) {}
+    }
+    applyTheme(document.documentElement.dataset.theme || 'day');
+    themeBtn.addEventListener('click', () => {
+      applyTheme(document.documentElement.dataset.theme === 'night' ? 'day' : 'night');
+    });
+  }
   void fetchState();
   void fetchAgentSnapshot();
   startEvents();
