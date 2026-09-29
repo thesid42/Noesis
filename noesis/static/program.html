@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#070a0f">
+    <title>Noesis · Program</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/program.css">
+    <script src="/static/program.js" defer></script>
+  </head>
+  <body class="program-page">
+    <main class="program-output" id="program-output" aria-label="Noesis program output">
+      <img class="program-feed" id="program-feed" alt="Selected program camera" decoding="async">
+      <div class="output-empty" id="output-empty"><span>▧</span><strong>Program is standing by</strong><small>Start a session in the Noesis control room.</small></div>
+      <div class="output-shade" aria-hidden="true"></div>
+      <div class="output-topline">
+        <span class="output-live" id="output-live"><i></i><span>STANDBY</span></span>
+        <span class="output-label" id="output-label">LOCAL PROGRAM SIGNAL</span>
+        <span class="output-clock" id="output-clock">00:00</span>
+      </div>
+      <div class="program-lowerthird" id="program-lowerthird">
+        <span class="output-kicker" id="output-kicker">NOESIS</span>
+        <strong id="output-camera">Awaiting program source</strong>
+        <span id="output-reason">The controller’s selected camera will appear here.</span>
+      </div>
+      <div class="output-footline"><span id="input-label">INPUT NOT REPORTED</span><span id="scene-label"></span><span class="output-mark"><i></i> NOESIS</span></div>
+      <button class="program-audio" id="program-audio-button" type="button" hidden aria-pressed="false"><span aria-hidden="true">♫</span><span id="audio-label">Enable program audio</span></button>
+      <span class="program-error" id="program-error" role="status" aria-live="polite"></span>
+      <audio id="program-audio" preload="none"></audio>
+    </main>
+  </body>
+</html>

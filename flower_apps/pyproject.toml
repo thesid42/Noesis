@@ -1,0 +1,16 @@
+[project]
+name = "noesis-agents"
+version = "0.1.0"
+description = "Flower AgentApps for Noesis camera observations and shot decisions"
+requires-python = ">=3.11,<3.14"
+dependencies = ["flwr==1.39.0", "openai>=2.16,<3"]
+
+[tool.flwr.app]
+publisher = "noesis"
+flwr-version-target = "1.39.0"
+
+[tool.flwr.app.components]
+agentapp = "noesis_agents.agent_app:app"
+
+[tool.flwr.app.config]
+"agent.input" = "Noesis role configuration is provided in the Flower run prompt."

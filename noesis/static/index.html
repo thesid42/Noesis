@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0b111a">
+    <title>Noesis · Control room</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Noesis control room">
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span class="brand-copy"><strong>Noesis</strong><small>PRODUCTION CONTROL</small></span>
+        </a>
+        <div class="topbar-right">
+          <a class="program-link" href="/program" target="_blank" rel="noreferrer">Open program output <span aria-hidden="true">↗</span></a>
+          <span class="connection-indicator" id="connection-indicator" data-state="connecting"><span class="status-dot"></span><span id="connection-label">Connecting</span></span>
+          <button class="icon-button credits-trigger" id="credits-open" type="button" aria-haspopup="dialog" aria-controls="credits-dialog" title="Source credits and data notes">ⓘ <span>Credits</span></button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="page-heading" aria-labelledby="page-title">
+          <div>
+            <p class="eyebrow">LIVE PRODUCTION</p>
+            <h1 id="page-title">Control room</h1>
+            <p class="page-subtitle">One continuous program. Five sources. A crew that stays on air.</p>
+          </div>
+          <div class="mode-card" id="mode-card" data-mode="unknown" aria-live="polite">
+            <span class="mode-orb" aria-hidden="true"></span>
+            <span class="mode-copy"><small>DIRECTOR MODE</small><strong id="mode-title">Waiting for controller</strong><span id="mode-detail">Connecting to local production service</span></span>
+          </div>
+        </section>
+
+        <section class="control-bar panel" aria-label="Session controls">
+          <div class="session-selectors">
+            <label class="select-field"><span>INPUT</span><select id="input-mode" aria-label="Input source"><option value="synthetic">Synthetic test feeds</option><option value="ami">AMI replay</option></select></label>
+            <span class="selector-divider" aria-hidden="true"></span>
+            <label class="select-field"><span>OUTPUT</span><select id="output-mode" aria-label="Output destination"><option value="preview">Local preview</option><option value="obs">OBS Studio</option></select></label>
+          </div>
+          <div class="session-actions">
+            <button class="button button-primary" id="start-session" type="button"><span class="button-icon" aria-hidden="true">▶</span> Start session</button>
+            <button class="button button-secondary" id="pause-session" type="button" disabled><span class="button-icon" aria-hidden="true">Ⅱ</span> Pause</button>
+            <button class="button button-quiet" id="stop-session" type="button" disabled>Stop</button>
+            <span class="action-divider" aria-hidden="true"></span>
+            <button class="button button-resume" id="resume-autopilot" type="button" disabled><span aria-hidden="true">↻</span> Resume autopilot</button>
+          </div>
+        </section>
+
+        <div class="main-grid">
+          <div class="primary-column">
+            <section class="panel program-panel" aria-labelledby="program-heading">
+              <div class="section-heading program-heading">
+                <div><p class="eyebrow">ON AIR</p><h2 id="program-heading">Program preview</h2></div>
+                <div class="program-heading-right"><span class="output-chip" id="output-chip">PREVIEW OUTPUT</span><span class="live-chip" id="live-chip"><i></i> IDLE</span></div>
+              </div>
+              <div class="program-stage" id="program-stage">
+                <img id="program-image" alt="Current program camera image" decoding="async">
+                <div class="preview-placeholder" id="preview-placeholder"><span class="placeholder-glyph" aria-hidden="true">▧</span><strong>Program image will appear here</strong><span>Start a session to see the selected camera.</span></div>
+                <div class="program-stage-scrim" aria-hidden="true"></div>
+                <div class="stage-topline"><span class="stage-live" id="stage-live"><i></i> STANDBY</span><span class="stage-time" id="session-time">00:00 <span>/ 00:00</span></span></div>
+                <div class="stage-lowerthird"><span class="lowerthird-kicker" id="scene-kicker">PROGRAM</span><strong id="program-camera">Awaiting program source</strong><span id="program-reason">The controller’s selected camera will appear here.</span></div>
+                <span class="preview-watermark" id="preview-watermark">LOCAL PREVIEW</span>
+              </div>
+              <div class="program-footer">
+                <div class="current-shot"><span class="footer-label">CURRENT SHOT</span><strong id="current-shot-name">No source selected</strong><span id="current-shot-scene">—</span></div>
+                <div class="program-footer-stats"><div><span class="footer-label">CUTS</span><strong id="cuts-count">—</strong></div><div><span class="footer-label">FALLBACKS</span><strong id="fallbacks-count">—</strong></div><div><span class="footer-label">SESSION</span><strong id="session-status">Idle</strong></div></div>
+                <button class="audio-toggle" id="preview-audio-toggle" type="button" aria-pressed="false" title="Enable audio in this preview"> <span aria-hidden="true">♫</span> Preview audio <i></i></button>
+                <audio id="preview-audio" preload="none"></audio>
+              </div>
+            </section>
+
+            <section class="panel sources-panel" aria-labelledby="sources-heading">
+              <div class="section-heading sources-heading">
+                <div><p class="eyebrow">INPUT MONITOR</p><h2 id="sources-heading">Camera sources <span class="heading-count" id="source-count">5</span></h2></div>
+                <p class="section-note">Select a source to take manual control</p>
+              </div>
+              <div class="camera-grid" id="camera-grid" aria-live="polite" aria-label="Camera source status">
+                <div class="source-loading"><span class="loading-pulse"></span> Connecting to camera sources…</div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="side-column">
+            <section class="panel crew-panel" aria-labelledby="crew-heading">
+              <div class="section-heading compact-heading"><div><p class="eyebrow">DISTRIBUTED CREW</p><h2 id="crew-heading">Agent activity</h2></div><span class="crew-state" id="crew-state">CHECKING</span></div>
+              <div class="crew-summary" id="crew-summary"><span class="crew-avatar crew-avatar-director">D</span><div><strong>Director runtime</strong><span id="flower-summary">Waiting for agent snapshot</span></div></div>
+              <div class="agent-list" id="agent-list"><div class="empty-inline">No agent heartbeat received yet.</div></div>
+              <div class="trace-heading"><span>RECENT TRACE</span><span id="trace-count">—</span></div>
+              <ol class="trace-list" id="trace-list" aria-live="polite"><li class="empty-trace">Trace events will appear as the controller reports them.</li></ol>
+            </section>
+
+            <section class="panel ops-panel" aria-labelledby="ops-heading">
+              <div class="section-heading compact-heading"><div><p class="eyebrow">INTEGRATIONS</p><h2 id="ops-heading">Production links</h2></div></div>
+              <div class="integration-row"><span class="integration-icon obs-icon" aria-hidden="true">O</span><div class="integration-copy"><strong>OBS Studio</strong><span id="obs-status">Status not yet reported</span></div><span class="integration-indicator" id="obs-indicator" data-state="unknown" aria-label="OBS status"></span></div>
+              <div class="obs-actions"><button type="button" class="button button-small button-secondary" id="obs-connect">Connect OBS</button><button type="button" class="button button-small button-quiet" id="obs-setup">Set up scenes</button></div>
+              <div class="ops-rule"></div>
+              <div class="fault-heading"><div><strong>Fault injection</strong><span>Visible test signal into a source</span></div><span class="test-label">TEST</span></div>
+              <div class="fault-controls"><label class="visually-hidden" for="fault-camera">Camera to affect</label><select id="fault-camera" aria-label="Camera to affect"><option value="closeup1">Close-up 1</option><option value="closeup2">Close-up 2</option><option value="closeup3">Close-up 3</option><option value="closeup4">Close-up 4</option><option value="corner">Corner</option></select><label class="visually-hidden" for="fault-kind">Fault type</label><select id="fault-kind" aria-label="Fault type"><option value="black">Blackout</option><option value="freeze">Freeze frame</option><option value="offline">Offline · 10 sec</option><option value="none">Clear fault</option></select><button type="button" class="button button-small button-fault" id="inject-fault">Apply</button></div>
+              <p class="ops-footnote" id="ops-footnote">Test faults affect the source used by the program and health monitor.</p>
+            </section>
+          </aside>
+        </div>
+        <footer class="page-footer"><span>Local production controller</span><span>Recorded footage and generated feeds are identified at source</span><button type="button" id="credits-open-footer">Data credits</button></footer>
+      </main>
+    </div>
+
+    <dialog class="credits-dialog" id="credits-dialog" aria-labelledby="credits-title">
+      <form method="dialog"><button class="dialog-close" aria-label="Close credits">×</button></form>
+      <p class="eyebrow">SOURCES &amp; ATTRIBUTION</p><h2 id="credits-title">Demo credits</h2>
+      <div class="credits-body"><p>When AMI replay is available, the source footage and audio are from the AMI Meeting Corpus, session ES2002a, AMI Project.</p><p><a href="https://groups.inf.ed.ac.uk/ami/corpus/" target="_blank" rel="noreferrer">AMI Meeting Corpus</a> · Licensed under <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">Creative Commons Attribution 4.0 International</a>.</p><p>Noesis modifications may include selected excerpts, transcoding, automatic camera selection, and clearly labeled test faults. No endorsement by the source creators is implied.</p><p>Synthetic feeds are generated test imagery, not AMI footage or a live camera. The current input and output modes are shown in the control room.</p></div>
+    </dialog>
+    <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
+  </body>
+</html>

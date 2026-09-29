@@ -1,0 +1,70 @@
+{
+  "session": "ES2002a",
+  "credits": "Source footage and audio: AMI Meeting Corpus, session ES2002a, AMI Project. Source: https://groups.inf.ed.ac.uk/ami/corpus/. Licensed under Creative Commons Attribution 4.0 International: https://creativecommons.org/licenses/by/4.0/. Noesis modifications include selected playback, automatic camera selection, transcoding when prepared, and labeled simulated camera faults. No endorsement by the source creators is implied.",
+  "base_url": "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2002a",
+  "camera_directory": "video",
+  "audio_directory": "audio",
+  "video_offset_s": 0.0,
+  "audio_offset_s": 0.0,
+  "source_timing_note": "Published ES2002a closeup.smil and sides.smil start the RealMedia videos and Mix-Headset audio at 0s. This supports a common starting origin; fine A/V alignment still needs measurement on the exported clip.",
+  "known_audio_issue": "AMI reports a badly worn headset for 'participant 1'. The meeting's info.xml labels P1 as the industrial designer, but verify microphone identity and signal before replacing a headset with a lapel; no channel is substituted automatically.",
+  "cameras": [
+    {
+      "id": "closeup1",
+      "name": "Close-up A",
+      "participant": "A",
+      "role": "Industrial designer",
+      "video_file": "ES2002a.Closeup1.avi",
+      "audio_file": "ES2002a.Headset-0.wav",
+      "audio_mapping_note": "Published ES2002a mapping pairs participant A with Headset-0. Confirm channel identity and quality by listening before evaluation."
+    },
+    {
+      "id": "closeup2",
+      "name": "Close-up C",
+      "participant": "C",
+      "role": "User-interface designer",
+      "video_file": "ES2002a.Closeup2.avi",
+      "audio_file": "ES2002a.Headset-2.wav",
+      "audio_mapping_note": "Published ES2002a mapping pairs participant C with Headset-2. Confirm channel identity and quality by listening before evaluation."
+    },
+    {
+      "id": "closeup3",
+      "name": "Close-up D",
+      "participant": "D",
+      "role": "Marketing expert",
+      "video_file": "ES2002a.Closeup3.avi",
+      "audio_file": "ES2002a.Headset-3.wav",
+      "audio_mapping_note": "Published ES2002a mapping pairs participant D with Headset-3. Confirm channel identity and quality by listening before evaluation."
+    },
+    {
+      "id": "closeup4",
+      "name": "Close-up B",
+      "participant": "B",
+      "role": "Project manager",
+      "video_file": "ES2002a.Closeup4.avi",
+      "audio_file": "ES2002a.Headset-1.wav",
+      "audio_mapping_note": "Published ES2002a mapping pairs participant B with Headset-1. Confirm channel identity and quality by listening before evaluation. Do not infer the known headset problem's channel from its human participant number."
+    },
+    {
+      "id": "corner",
+      "name": "Corner room view",
+      "participant": null,
+      "role": "Room overview",
+      "video_file": "ES2002a.Corner.avi",
+      "audio_file": null,
+      "audio_mapping_note": "Room view; it does not claim a speaker identity."
+    }
+  ],
+  "program_audio_file": "ES2002a.Mix-Headset.wav",
+  "channel_order": ["closeup1", "closeup2", "closeup3", "closeup4"],
+  "calibration_s": 3.0,
+  "vad": {
+    "window_s": 0.25,
+    "minimum_confirm_s": 0.35,
+    "hangover_s": 0.45,
+    "minimum_rms": 0.006,
+    "relative_noise_multiplier": 2.8,
+    "cross_talk_ratio": 0.72,
+    "noise_history_s": 12.0
+  }
+}
