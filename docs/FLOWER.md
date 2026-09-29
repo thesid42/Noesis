@@ -1,82 +1,96 @@
-# Noesis Flower AgentApps
+# Flower SuperGrid setup
 
-Noesis runs five independent Flower AgentApps through the local Flower SuperLink: one Camera AgentApp for each participant close-up and one Director AgentApp. Each process runs under a real Flower run ID. The camera agents read the current source snapshot, report compact timestamped observations to the local Noesis HTTP broker, and heartbeat separately. The Director reads expiring requests, checks recent same-session camera-agent evidence, and sends a proposal with the controller-issued request ID, session epoch, override epoch, and observation revision.
+Noesis's target runtime is collaborative Flower Agents on the authenticated `@thesid42/noesis` SuperGrid federation. The local source clock, HTTP controller, and OBS bridge remain on the demo host; native Flower Grid messages carry bounded tasks and replies between the coordinator and agents.
 
-The runs use application-managed HTTP messaging between Flower AgentApps and the local controller. Raw frames and audio stay on the local media path. The Corner source is covered by the deterministic controller and does not need a participant Camera AgentApp.
+## Six AI roles
 
-## Start and inspect
+The coordinator is a bounded Flower AgentApp run with a 240-second task budget. It dispatches one-reply jobs to six local SuperNodes. The four camera jobs and critic job start in parallel. The critic evaluates the current measured round and bounded prior AI report history independently; it does not wait for the four fresh camera results or consume them as inputs. The Director then uses all four current camera results, the current critic result, and a fresh snapshot.
 
-Start the Noesis server and make sure OBS is available if the session will use the OBS output. Then start the agents from the project environment:
+| Flower identity | Work |
+|---|---|
+| `camera-closeup1` … `camera-closeup4` | Independently assess measured health, speaking state, energy, quality, and age for one assigned close-up. Return `take`, `hold`, or `avoid` with a reason and confidence. |
+| `critic` | Assess the current measured round plus bounded prior AI report history as `steady`, `change`, or `wide`. It runs independently of the fresh camera jobs and does not pick a camera. |
+| `director` | Read all four camera reports, the critic report, and a fresh source snapshot; choose `hold` or a current healthy camera and submit the final editorial decision. |
+
+All six roles make model calls through the Flower-injected Responses runtime. The application sends compact numeric and categorical observations only. The models do not receive raw camera frames, raw audio, transcripts, or annotation labels, so Noesis makes no claim of semantic visual or speech understanding. The controller accepts the Director choice only when it cites the four camera replies and the parallel critic reply with matching current-round provenance.
+
+Flower Grid handles role-to-role job/reply traffic. The Noesis HTTP broker only supplies measured source snapshots and receives agent heartbeats and results; it is not used as a substitute for Grid messaging. The controller is deterministic about schema, provenance, time, health, and manual-control checks, but it does not use a speaker-score rule to pick the editorial shot. If AI work is missing or late, it keeps a healthy current shot. If the on-air source fails, the health guard may move to a healthy source.
+
+## Prerequisites and private configuration
+
+Use Python 3.12 and install the pinned Flower extra from the project root:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\flower_agents.py start
-.\.venv\Scripts\python.exe scripts\flower_agents.py status
+uv sync --python 3.12 --extra flower --extra dev
+Copy-Item .env.example .env  # skip if .env already exists
 ```
 
-The launcher reuses a reachable SuperLink at `127.0.0.1:8000`. If none is running, it starts one with the workspace Flower environment. It checks that the Noesis broker at `127.0.0.1:8765` is responding before submitting runs.
+In `.env`, configure both Nebius profiles with their full `/v1/responses` endpoints, model IDs available to your account, and API keys. The current launcher expects both profiles because the control room supports a live Kimi/MiniMax selector:
 
-The default run is bounded to one hour per AgentApp and uses the rules Director. It does not need model credentials. Flower assigns a distinct run ID to each process; the launcher records only those run IDs in `.runtime/flower-agents.json`.
+```text
+NEBIUS_KIMI_API_ENDPOINT=
+NEBIUS_KIMI_MODEL=
+NEBIUS_KIMI_API_KEY=
+NEBIUS_MINIMAX_API_ENDPOINT=
+NEBIUS_MINIMAX_MODEL=
+NEBIUS_MINIMAX_API_KEY=
+```
 
-Stop the runs owned by this launcher with:
+Use the exact endpoint and model identifiers for your provider account; the public repo does not include keys. `.env` is ignored by Git. Do not paste keys into a prompt, browser, AgentApp task, or demo report.
+
+The Flower CLI must already have an authenticated `supergrid` connection with permission to use the `@thesid42/noesis` federation. The launcher uses that saved connection and does not print or copy its authentication tokens. The SuperNodes use generated per-node keys under ignored `.runtime/supergrid/keys/`.
+
+## Register nodes and start the demo
+
+Register the six node identities once:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\flower_agents.py stop
+.\.venv\Scripts\python.exe scripts\supergrid_agents.py setup
+.\.venv\Scripts\python.exe scripts\supergrid_agents.py status
 ```
 
-Stopping these runs leaves the shared SuperLink running. If a run stops unexpectedly, inspect its actual Flower status and logs with `status` and the Flower Control API or CLI before restarting.
+Registration adds these identities to the configured federation. `status` shows current SuperGrid node status; it does not establish that a model response or AI decision has completed.
 
-The lifecycle script uses the Flower 1.39 `ControlHttpClient` and builds a local FAB from `flower_apps/`. It passes a JSON run prompt in `StartRunRequest.user_prompt`, which is required by the supported runtime path used here.
+Start the full runtime with Kimi selected by default:
 
-## Nebius model profiles
+```powershell
+.\.venv\Scripts\python.exe scripts\run_demo.py --obs --model-profile kimi --duration-s 240
+```
 
-Two private profiles are supported: `kimi` and `minimax`. Configure these variables in the ignored `.env`:
+The launcher starts the local controller and model gateway, starts six local Flower SuperNodes, waits for all of them to be online, and submits a coordinator task capped at 240 seconds. The task stays below the event's five-minute per-task limit. The launcher can renew completed coordinator tasks until its overall `--duration-s` budget ends; the default budget is one hour. Keep the terminal open. Ctrl+C stops the coordinator run and services owned by this launcher.
 
-- `NEBIUS_KIMI_API_ENDPOINT`, `NEBIUS_KIMI_MODEL`, `NEBIUS_KIMI_API_KEY`
-- `NEBIUS_MINIMAX_API_ENDPOINT`, `NEBIUS_MINIMAX_MODEL`, `NEBIUS_MINIMAX_API_KEY`
+Open **http://127.0.0.1:8765**. Start a Synthetic session for generated, visibly labeled test feeds, or an AMI session when its prepared media is available. Choose OBS output when the real OBS program scene is ready; omit `--obs` to use the control-room preview. The `/program` page is the single OBS browser source and preserves AMI mix audio across cuts. Starting an AMI session from the control room also gives the browser its user gesture to unlock audio.
 
-The endpoint must be the full Open Responses URL ending in `/responses`. The supplied Nebius deployments use `https://api.tokenfactory.tf-ca1.nebius.com/v1/responses`. Keys stay out of the AgentApp FAB, run prompt, dashboard, and reports; `ex.txt` is also ignored.
+The launcher configures the loopback model gateway with the two configured provider targets. The control room has a model selector and switches invalidate outstanding responses from the prior model epoch without pausing the session. Keep Kimi selected for this demo: MiniMax was not run or verified. Flower-injected credentials reach the loopback gateway, while Nebius credentials stay in the gateway process. Provider keys are never part of the FAB, Grid task payload, API state, or result records.
+
+The Windows wrapper is also available:
 
 ```powershell
 .\start.ps1 -OBS -ModelProfile kimi
-# In another terminal:
-.\.venv\Scripts\python.exe scripts/verify_nebius.py --profile kimi
 ```
 
-Stop that launcher with Ctrl+C before selecting MiniMax:
+`start.ps1` starts the same SuperGrid launcher. It does not provide a local-only AI substitute. To configure the project's portable OBS before the first OBS run, use `scripts/setup_obs.py` and `scripts/configure_obs.py` as described in the README.
+
+## What counts as a verified result
+
+Check both the managed Grid run and the controller state. The dashboard reports all six role heartbeats, a coordinator run ID/status when available, model profile/epoch, and accepted model results with response IDs and token/latency metadata. A registered node or submitted task is not proof that its worker came online or returned a valid result. `flower.model_status` remains `configured_not_verified` until a completed model response has been accepted; each role result is displayed only when current for the session, override, and model epoch.
+
+For the current integration status, see [validation](VALIDATION.md). All six nodes are online in the authenticated federation. Kimi run `96528684490097715` finished `completed` in 245.545 seconds, with six accepted role responses and a Director choice of Closeup3. The first round expired at its 30-second deadline; a later round completed in about 23 seconds. The launcher renewed into run `3067815238044157620`, which subsequently reached Running. No MiniMax run was made.
+
+## Hackathon submission requirements
+
+The organizer's public requirements JSON was checked on 29 September 2026. The required submission includes collaborative Flower Agents on SuperGrid, an AgentApp published to Flower Hub, a team registration form with a team description and GitHub repository, and a 3–5 minute demo. Individual tasks must stay at or below five minutes. Endeavor is optional.
+
+The code and launcher implement the SuperGrid topology and a 240-second task budget. All six nodes are online and Kimi has a successful live round; the renewed run also reached Running. The AgentApp is prepared locally but has not been published to Flower Hub. Completing the team form and final demo remain pending.
+
+## Local Flower Hub package review
+
+The AgentApp package is prepared for local review and deliberately remains unpublished. Run:
 
 ```powershell
-.\start.ps1 -OBS -ModelProfile minimax
-.\.venv\Scripts\python.exe scripts/verify_nebius.py --profile minimax
+.\.venv\Scripts\python.exe scripts\prepare_hub.py
 ```
 
-Switching profiles requires a new SuperLink process because its model workers inherit the upstream configuration. The launchers reject reuse when the running service's recorded profile does not match. The local profile record contains metadata and a key fingerprint, never the key itself.
+This stages the files under ignored `.runtime/hub/noesis-agents/`, checks Flower's source-file rules, scans the seven source files for configured secret values, builds a FAB locally, and writes source hashes and FAB identity to `.runtime/hub/review.json`. The latest preparation reported seven files and zero secret matches. It does **not** publish to Flower Hub; publication remains pending.
 
-The AgentApp calls `client.responses.create` with Flower's injected `FLWR_RUNTIME_BASE_URL` and `FLWR_RUNTIME_API_KEY`. Flower forwards each model task to the configured Nebius Responses endpoint using `FLWR_MODEL_API_ENDPOINT` and `FLWR_MODEL_API_KEY`. No direct Nebius inference call is made by the AgentApp.
-
-## Fast camera control and slower editorial policy
-
-Hosted inference takes longer than the fast camera-switching window. The Director therefore keeps camera proposals rules-based, with explicit `decision_source: rules`. A separate worker makes at most one model call at a time, with a 25-second client timeout and a 30-second controller lease. It requests policy roughly every 10 seconds while replay is running in autopilot.
-
-The model receives compact causal camera-agent observations and recent event types, never raw video, audio, transcripts, or credentials. Its strict JSON result can choose only:
-
-- A minimum shot duration from 4 to 8 seconds.
-- `hold` or `wide` for overlapping speakers.
-- A short explanation.
-
-A valid result becomes a 20-second policy. The local controller applies it to current evidence and checks the target again at camera-cut commit. Camera health recovery bypasses the minimum shot duration. Manual override, pause/seek/session changes, director heartbeat loss, or policy expiry remove the policy. Failures retain local rules.
-
-Model response validation, policy acceptance, and actual policy-guided cuts are separate events. The dashboard shows an active model policy only after acceptance; otherwise it explicitly reports local rules or an unverified configuration. Safe model response IDs, token counts, latency, and profile identity are retained for the rehearsal report.
-
-`verify_nebius.py` records a bounded synthetic rehearsal, requires an accepted model policy and at least one policy-guided cut, checks black-camera recovery and manual override, and decodes the OBS recording. It saves `.runtime/nebius-<profile>-acceptance.json`; `--preview-only` skips OBS. Reports and recordings stay local.
-
-Both profiles passed on 29 September 2026: three accepted policies and four policy-guided cuts per rehearsal. Final Kimi calls took about 3.5 seconds and MiniMax calls 4.0–5.5 seconds; an earlier cold Kimi call took 22.7 seconds. Recovery and manual override passed with each profile. See [full measured results and limits](VALIDATION.md).
-
-Flower 1.39.0 separately requests conversation titles using a hardcoded `openai/gpt-5-nano` model. The provided Nebius deployments reject that model with a nonfatal 404. Successful director responses are verified by their own model identity, response ID, and accepted policy events; title errors do not indicate that Kimi or MiniMax inference failed.
-
-## Runtime details
-
-- Flower and the AgentApp bundle target `flwr==1.39.0`.
-- Each camera report carries `session_id`, `epoch`, source media time, UTC observation time, health, speaker evidence, and source revision. The broker rejects evidence that is future-dated, expired, or from another session generation.
-- The Director ignores stale or cross-session reports, holds when camera evidence is missing or overlapping, and submits only controller-issued request metadata. The controller remains responsible for validating and executing every proposal.
-- The Dashboard's mode is reported by the controller from live AgentApp heartbeats. A locally managed run ID alone is not treated as proof that an AgentApp is healthy.
-- `.runtime/flower-agents.json` contains launcher-owned Flower run IDs; `stop` addresses only these IDs through `StopRunRequest`.
+For the explicit requirements checklist and outstanding submission items, see [hackathon requirements](HACKATHON_REQUIREMENTS.md).

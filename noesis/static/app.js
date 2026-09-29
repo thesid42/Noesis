@@ -12,7 +12,9 @@
   const refs = {
     connection: $('connection-indicator'), connectionLabel: $('connection-label'),
     modeCard: $('mode-card'), modeTitle: $('mode-title'), modeDetail: $('mode-detail'),
-    inputMode: $('input-mode'), outputMode: $('output-mode'), start: $('start-session'),
+    inputMode: $('input-mode'), outputMode: $('output-mode'), modelProfile: $('model-profile'),
+    modelProfileStatus: $('model-profile-status'), modelVerificationStatus: $('model-verification-status'),
+    aiProvenance: $('ai-provenance'), start: $('start-session'),
     pause: $('pause-session'), stop: $('stop-session'), resume: $('resume-autopilot'),
     programImage: $('program-image'), previewPlaceholder: $('preview-placeholder'), stage: $('program-stage'),
     outputChip: $('output-chip'), previewWatermark: $('preview-watermark'), liveChip: $('live-chip'),
@@ -22,9 +24,11 @@
     cuts: $('cuts-count'), fallbacks: $('fallbacks-count'), sessionStatus: $('session-status'),
     cameraGrid: $('camera-grid'), sourceCount: $('source-count'), faultCamera: $('fault-camera'),
     crewState: $('crew-state'), crewSummary: $('flower-summary'), agentList: $('agent-list'),
+    gridRun: $('grid-run'), gridRunId: $('grid-run-id'), gridRunStatus: $('grid-run-status'),
     traceList: $('trace-list'), traceCount: $('trace-count'), obsStatus: $('obs-status'),
     obsIndicator: $('obs-indicator'), opsFootnote: $('ops-footnote'), audio: $('preview-audio'),
-    audioToggle: $('preview-audio-toggle'), toastRegion: $('toast-region'), creditsDialog: $('credits-dialog'),
+    audioToggle: $('preview-audio-toggle'), audioVolume: $('preview-audio-volume'), audioStatus: $('preview-audio-status'),
+    toastRegion: $('toast-region'), creditsDialog: $('credits-dialog'),
   };
   let latestState = null;
   let latestAgentSnapshot = null;
@@ -36,6 +40,9 @@
   let audioSessionId = null;
   let audioEpoch = null;
   let audioMissing = false;
+  let audioStartPending = false;
+  let profileBusy = false;
+  let profileOptionSignature = '';
   let inputChoiceTouched = false;
   let outputChoiceTouched = false;
   const imageRequests = new Map();
@@ -138,8 +145,7 @@
     if (!refs.stop.hasAttribute('aria-busy')) refs.stop.disabled = !active && !stopPending;
     if (!refs.resume.hasAttribute('aria-busy')) refs.resume.disabled = !manuallyLatched || status !== 'running';
     refs.pause.innerHTML = status === 'paused' ? '<span class="button-icon" aria-hidden="true">▶</span> Resume' : '<span class="button-icon" aria-hidden="true">Ⅱ</span> Pause';
-    refs.audioToggle.disabled = !(latestState && latestState.data && latestState.data.ami_available && session && session.input_mode === 'ami' && session.status === 'running') || audioMissing;
-    refs.audioToggle.title = refs.audioToggle.disabled ? 'Audio preview is available when an AMI audio mix is ready.' : (audioEnabled ? 'Disable audio in this preview' : 'Enable audio in this preview');
+    renderAudioControls(latestState || {});
   }
   function renderMode(state) {
     const mode = state.mode || 'unknown';
@@ -246,14 +252,26 @@
   }
   function renderFlower(state) {
     const flower = state.flower || {};
+    renderModelProfile(state);
     const agents = Array.isArray(flower.agents) ? flower.agents : (latestAgentSnapshot && Array.isArray(latestAgentSnapshot.agents) ? latestAgentSnapshot.agents : []);
     const flowerStatus = String(flower.status || (latestAgentSnapshot && latestAgentSnapshot.status) || 'not reported');
-    const policy = flower.editorial_policy;
-    const decisionMode = flower.decision_modes && flower.decision_modes.director === 'llm'
-      ? policy ? `model policy active · ${policy.min_shot_s}s shots · ${policy.overlap_mode} on overlap`
-        : flower.model_status === 'verified' ? `model verified · ${state.session && state.session.status === 'running' ? 'local rules active' : 'replay inactive'}` : 'model configured · awaiting verified policy'
-      : 'rules mode · no model calls';
-    refs.crewSummary.textContent = flowerStatus === 'not reported' ? 'No Flower status reported' : `${flowerStatus} · ${decisionMode}${flower.model ? ` · ${flower.model}` : ''}`;
+    const selectedModel = state.models && Array.isArray(state.models.options)
+      ? state.models.options.find((item) => item.id === state.models.selected) : null;
+    const profileStatus = flower.model_status === 'verified' ? 'verified' : flower.model_status === 'configured_not_verified' ? 'configured · not verified' : 'status not reported';
+    const profileLabel = selectedModel && selectedModel.label ? selectedModel.label : 'AI profile';
+    refs.crewSummary.textContent = flowerStatus === 'not reported'
+      ? `${profileLabel} · ${profileStatus} · no Flower status reported`
+      : `${flowerStatus} · ${profileLabel} · ${profileStatus}`;
+    const gridRun = flower.grid_run && typeof flower.grid_run === 'object' ? flower.grid_run : {};
+    const gridRunId = typeof gridRun.run_id === 'string' ? gridRun.run_id.trim() : '';
+    const gridRunStatus = [gridRun.status, gridRun.sub_status]
+      .filter((value) => typeof value === 'string' && value.trim())
+      .join(' · ');
+    refs.gridRun.hidden = !gridRunId && !gridRunStatus;
+    refs.gridRunId.textContent = gridRunId ? `#${gridRunId}` : 'No run ID reported';
+    refs.gridRunStatus.textContent = gridRunStatus ? gridRunStatus.toUpperCase() : 'STATUS NOT REPORTED';
+    refs.gridRunStatus.title = gridRun.checked_at ? `Last checked ${String(gridRun.checked_at)}` : '';
+    refs.gridRun.dataset.state = String(gridRun.status || 'unknown').toLowerCase();
     const hasHealthy = agents.some((agent) => agent.healthy === true);
     const isUnavailable = /unavailable|offline|stopped|error|degraded/i.test(flowerStatus);
     refs.crewState.dataset.state = isUnavailable ? 'degraded' : hasHealthy ? 'healthy' : '';
@@ -264,6 +282,104 @@
       const details = [agent.role, agent.camera_id ? `camera ${agent.camera_id}` : null, agent.run_id ? `run ${agent.run_id}` : null].filter(Boolean).join(' · ');
       return `<div class="agent-row"><span class="agent-dot" data-healthy="${agent.healthy === true ? 'true' : 'false'}" aria-hidden="true"></span><span class="agent-copy"><strong>${escapeHtml(identity)}</strong><span title="${escapeHtml(details || runtime)}">${escapeHtml(details || runtime)}</span></span><span class="agent-age">${agent.healthy === true ? fmtAge(agent.age_ms).replace('AGE ', '') : 'STALE'}</span></div>`;
     }).join('') : `<div class="empty-inline">${escapeHtml(flower.error || 'No agent heartbeat received yet.')}</div>`;
+    renderModelProvenance(state);
+  }
+
+  const AI_ROLES = [
+    { agent: 'camera-closeup1', title: 'Camera · Close-up 1', decisionRole: 'camera' },
+    { agent: 'camera-closeup2', title: 'Camera · Close-up 2', decisionRole: 'camera' },
+    { agent: 'camera-closeup3', title: 'Camera · Close-up 3', decisionRole: 'camera' },
+    { agent: 'camera-closeup4', title: 'Camera · Close-up 4', decisionRole: 'camera' },
+    { agent: 'director', title: 'Director', decisionRole: 'director' },
+    { agent: 'critic', title: 'Critic', decisionRole: 'critic' },
+  ];
+
+  function renderModelProfile(state) {
+    const models = state.models;
+    if (!models || !Array.isArray(models.options)) {
+      refs.modelProfile.disabled = true;
+      refs.modelProfileStatus.textContent = 'Model profiles not reported';
+      return;
+    }
+    const options = models.options.filter((item) => item && typeof item.id === 'string' && typeof item.label === 'string');
+    const signature = JSON.stringify(options.map((item) => [item.id, item.label, item.available === true]));
+    if (signature !== profileOptionSignature) {
+      profileOptionSignature = signature;
+      refs.modelProfile.replaceChildren(...options.map((item) => {
+        const option = document.createElement('option');
+        option.value = item.id;
+        option.textContent = `${item.label}${item.available === true ? '' : ' · unavailable'}`;
+        option.disabled = item.available !== true;
+        return option;
+      }));
+    }
+    const selected = typeof models.selected === 'string' ? models.selected : '';
+    if (selected && [...refs.modelProfile.options].some((option) => option.value === selected)) refs.modelProfile.value = selected;
+    refs.modelProfile.disabled = profileBusy || !options.some((item) => item.available === true);
+    refs.modelProfile.setAttribute('aria-busy', String(profileBusy));
+    const flower = state.flower || {};
+    const verification = flower.model_status === 'verified' ? 'VERIFIED' : flower.model_status === 'configured_not_verified' ? 'NOT VERIFIED' : 'NOT REPORTED';
+    refs.modelProfileStatus.textContent = profileBusy ? 'Switching profile…' : `${verification} · fresh AI response required after a switch`;
+    refs.modelVerificationStatus.textContent = verification;
+    refs.modelVerificationStatus.dataset.state = flower.model_status === 'verified' ? 'verified' : 'pending';
+  }
+
+  function roleRecordKey(record) {
+    if (!record || typeof record !== 'object') return '';
+    if (typeof record.agent_id === 'string') return record.agent_id;
+    const role = String(record.role || '').toLowerCase();
+    const cameraId = String(record.camera_id || '').toLowerCase();
+    if (role === 'camera' && cameraId) return `camera-${cameraId}`;
+    return role;
+  }
+
+  function renderModelProvenance(state) {
+    const flower = state.flower || {};
+    const results = Array.isArray(flower.inference_results) ? flower.inference_results : [];
+    const latest = new Map();
+    for (const result of results) {
+      const key = roleRecordKey(result);
+      if (key && AI_ROLES.some((role) => role.agent === key)) latest.set(key, result);
+    }
+    const epoch = state.models && Number.isInteger(state.models.epoch) ? state.models.epoch : null;
+    const session = state.session || {};
+    const currentSessionId = session.id ?? null;
+    const currentSessionEpoch = Number.isInteger(session.epoch) ? session.epoch : null;
+    const currentOverrideEpoch = Number.isInteger(state.override_epoch) ? state.override_epoch
+      : Number.isInteger(flower.override_epoch) ? flower.override_epoch : null;
+    const modes = flower.decision_modes || {};
+    const active = state.session && state.session.status === 'running';
+    refs.aiProvenance.innerHTML = AI_ROLES.map((role) => {
+      const result = latest.get(role.agent);
+      const oldEpoch = result && epoch !== null && Number.isInteger(result.model_epoch) && result.model_epoch !== epoch;
+      const oldSession = result && (result.session_id !== currentSessionId
+        || currentSessionEpoch === null || result.epoch !== currentSessionEpoch
+        || (currentOverrideEpoch !== null && result.override_epoch !== currentOverrideEpoch));
+      const stale = oldEpoch || oldSession;
+      const accepted = result && result.status === 'completed' && typeof result.response_id === 'string' && result.response_id.length > 0 && !stale;
+      const failed = result && ['failed', 'error', 'rejected', 'incomplete'].includes(String(result.status || '').toLowerCase()) && !stale;
+      let status = accepted ? 'VERIFIED' : failed ? 'RESPONSE FAILED' : stale ? (oldEpoch ? 'PREVIOUS PROFILE' : 'PREVIOUS ROUND') : modes[role.decisionRole] === 'llm' ? (active ? 'WAITING FOR RESPONSE' : 'NO RESPONSE YET') : 'ROLE NOT REPORTED';
+      const details = [];
+      if (accepted) {
+        if (finite(result.latency_ms)) details.push(`${Math.max(0, Math.round(result.latency_ms))} ms`);
+        if (finite(result.output_tokens)) details.push(`${Math.max(0, Math.round(result.output_tokens))} output tokens`);
+        if (typeof result.model === 'string') details.push(result.model);
+        if (typeof result.response_id === 'string') details.push(`ID ${result.response_id.slice(0, 14)}`);
+      } else if (failed) {
+        if (finite(result.http_status)) details.push(`HTTP ${Math.round(result.http_status)}`);
+        else if (typeof result.error_class === 'string') details.push(result.error_class.slice(0, 40));
+      } else if (stale) {
+        details.push(oldEpoch ? 'A response from an earlier model profile is retained; waiting for a fresh one.' : 'A response from an earlier session or control epoch is retained; waiting for a fresh one.');
+      } else if (modes[role.decisionRole] === 'llm') {
+        details.push('Configured AI role has not returned a verified response yet.');
+      } else {
+        details.push('Waiting for the controller to report this AI role.');
+      }
+      if (role.agent === 'critic' && accepted && result.result && typeof result.result.reason === 'string') {
+        details.push(`Critic: ${result.result.reason.slice(0, 160)}`);
+      }
+      return `<div class="ai-role-row" data-state="${accepted ? 'verified' : failed ? 'error' : 'pending'}"><span class="ai-role-mark" aria-hidden="true">${accepted ? '✓' : failed ? '!' : '·'}</span><span class="ai-role-copy"><strong>${role.title}</strong><span>${escapeHtml(details.join(' · ') || status)}</span></span><span class="ai-role-state">${status}</span></div>`;
+    }).join('');
   }
   function renderTrace(state) {
     const events = Array.isArray(state.events) ? state.events.filter((event) => event.kind !== 'agent_heartbeat' && event.kind !== 'camera_observation').slice(0, 8) : [];
@@ -387,12 +503,19 @@
     const session = state.session || {};
     const available = Boolean(state.data && state.data.ami_available && session.input_mode === 'ami');
     if (!available) {
-      if (!refs.audio.paused) refs.audio.pause();
+      if (!audioStartPending && session.input_mode !== 'ami') {
+        audioEnabled = false;
+        if (!refs.audio.paused) refs.audio.pause();
+      } else if (!audioStartPending && !refs.audio.paused) {
+        refs.audio.pause();
+      }
+      renderAudioControls(state);
       return;
     }
-    if (audioMissing) return;
     const newSession = session.id !== audioSessionId;
     const newEpoch = session.epoch !== audioEpoch;
+    if (newSession) audioMissing = false;
+    if (audioMissing) return;
     if (!refs.audio.src || newSession) {
       refs.audio.src = '/api/audio';
       audioSessionId = session.id;
@@ -405,14 +528,129 @@
       try { refs.audio.currentTime = Math.max(0, session.time_s); } catch { /* The media clock is not seekable yet. */ }
     }
     if (audioEnabled && session.status === 'running' && refs.audio.paused) {
-      refs.audio.play().catch(() => { audioEnabled = false; refs.audioToggle.setAttribute('aria-pressed', 'false'); toast('Audio playback needs a fresh click in this browser.', 'error'); });
+      refs.audio.play().catch(() => {
+        if (audioStartPending) return;
+        audioEnabled = false;
+        refs.audioToggle.setAttribute('aria-pressed', 'false');
+        toast('AMI audio needs a click to resume in this browser.', 'error');
+        renderAudioControls(latestState || state);
+      });
     } else if (session.status !== 'running' && !refs.audio.paused) {
       refs.audio.pause();
     }
+    renderAudioControls(state);
   }
 
-  $('start-session').addEventListener('click', () => guardedAction('/api/session/start', { input_mode: refs.inputMode.value, output_mode: refs.outputMode.value, start_s: 0 }, refs.start, 'Session start requested.'));
-  refs.inputMode.addEventListener('change', () => { inputChoiceTouched = true; });
+  function renderAudioControls(state) {
+    const session = state && state.session || {};
+    const hasActiveSession = ['running', 'paused'].includes(session.status);
+    const inputMode = audioStartPending || !hasActiveSession ? refs.inputMode.value : (session.input_mode || refs.inputMode.value);
+    const amiMode = inputMode === 'ami';
+    const available = Boolean(state && state.data && state.data.ami_available);
+    const active = session.status === 'running';
+    const canAdjust = amiMode && available && !audioMissing;
+    refs.audioToggle.disabled = !canAdjust || !active;
+    refs.audioVolume.disabled = !canAdjust;
+    refs.audioToggle.setAttribute('aria-pressed', String(audioEnabled && !refs.audio.paused));
+    refs.audioToggle.innerHTML = ` <span aria-hidden="true">♫</span> ${audioEnabled && !refs.audio.paused ? 'Mute' : 'Unmute'} <i></i>`;
+    refs.audioToggle.title = canAdjust && active ? (audioEnabled && !refs.audio.paused ? 'Mute AMI replay audio' : 'Play AMI replay audio') : 'Audio controls are available for an active AMI replay.';
+    if (!amiMode) refs.audioStatus.textContent = 'Audio is available with AMI replay';
+    else if (audioMissing) refs.audioStatus.textContent = 'AMI audio is unavailable in this browser';
+    else if (audioStartPending) refs.audioStatus.textContent = 'Unlocking AMI audio for session start…';
+    else if (!available) refs.audioStatus.textContent = 'AMI audio source is not available';
+    else if (!active) refs.audioStatus.textContent = 'AMI audio will start with the session';
+    else if (audioEnabled && !refs.audio.paused) refs.audioStatus.textContent = `AMI replay playing · ${Math.round(refs.audio.volume * 100)}%`;
+    else refs.audioStatus.textContent = 'AMI replay ready · click Unmute to listen';
+  }
+
+  function prepareAmiAudioFromGesture() {
+    audioStartPending = true;
+    audioMissing = false;
+    audioEnabled = true;
+    refs.audio.muted = false;
+    refs.audio.volume = Number(refs.audioVolume.value);
+    refs.audio.src = '/api/audio';
+    refs.audioToggle.setAttribute('aria-pressed', 'true');
+    renderAudioControls(latestState || {});
+    // Call play synchronously from the Start click so browser activation is
+    // captured before the session-start network request. State updates below
+    // seek this same element to the session clock; camera cuts never reset it.
+    try {
+      const unlock = refs.audio.play();
+      if (unlock && typeof unlock.catch === 'function') unlock.catch(() => {
+        if (!audioStartPending) return;
+        refs.audioStatus.textContent = 'Session starting · waiting for AMI audio';
+      });
+    } catch {
+      refs.audioStatus.textContent = 'Session starting · waiting for AMI audio';
+    }
+  }
+
+  async function startSessionFromGesture() {
+    const inputMode = refs.inputMode.value;
+    if (inputMode === 'ami') prepareAmiAudioFromGesture();
+    else {
+      audioStartPending = false;
+      audioEnabled = false;
+      if (!refs.audio.paused) refs.audio.pause();
+    }
+    try {
+      await runAction('/api/session/start', { input_mode: inputMode, output_mode: refs.outputMode.value, start_s: 0 }, refs.start, 'Session start requested.');
+    } catch {
+      audioEnabled = false;
+      if (!refs.audio.paused) refs.audio.pause();
+    } finally {
+      audioStartPending = false;
+      if (inputMode === 'ami' && latestState && latestState.session && latestState.session.status === 'running' && latestState.session.input_mode === 'ami') {
+        syncPreviewAudio(latestState);
+        if (audioEnabled && refs.audio.paused) {
+          refs.audio.play().catch(() => {
+            audioEnabled = false;
+            toast('AMI audio needs a click to resume in this browser.', 'error');
+            renderAudioControls(latestState || {});
+          });
+        }
+      }
+      renderControls();
+    }
+  }
+
+  refs.audio.addEventListener('loadedmetadata', () => {
+    const session = latestState && latestState.session;
+    if (!session || session.input_mode !== 'ami' || !finite(session.time_s)) return;
+    try { refs.audio.currentTime = Math.max(0, session.time_s); } catch { /* A later state snapshot retries the seek. */ }
+  });
+
+  $('start-session').addEventListener('click', () => { void startSessionFromGesture(); });
+  refs.modelProfile.addEventListener('change', async () => {
+    const profile = refs.modelProfile.value;
+    const models = latestState && latestState.models;
+    if (!['kimi', 'minimax'].includes(profile) || !models || profile === models.selected) return;
+    const choice = Array.isArray(models.options) ? models.options.find((item) => item.id === profile) : null;
+    if (!choice || choice.available !== true) {
+      renderModelProfile(latestState || {});
+      return;
+    }
+    profileBusy = true;
+    renderModelProfile(latestState || {});
+    try {
+      const state = await post('/api/models/select', { profile });
+      if (state && typeof state === 'object' && state.models && state.models.selected === profile) applyState(state);
+      else {
+        await fetchState();
+        if (!latestState || !latestState.models || latestState.models.selected !== profile) throw new Error('Profile selection was not confirmed.');
+      }
+      const label = choice.label || profile;
+      toast(`${label} selected · waiting for fresh AI responses.`, 'success');
+    } catch {
+      if (latestState) renderModelProfile(latestState);
+      toast('Model profile could not be changed. Check the controller and try again.', 'error');
+    } finally {
+      profileBusy = false;
+      if (latestState) renderModelProfile(latestState);
+    }
+  });
+  refs.inputMode.addEventListener('change', () => { inputChoiceTouched = true; renderAudioControls(latestState || {}); });
   refs.outputMode.addEventListener('change', () => { outputChoiceTouched = true; });
   $('pause-session').addEventListener('click', () => {
     const paused = latestState && latestState.session && latestState.session.status === 'paused';
@@ -438,6 +676,10 @@
   $('obs-setup').addEventListener('click', (event) => guardedAction('/api/obs/setup', {}, event.currentTarget, 'OBS scene setup request sent.'));
   refs.audio.addEventListener('error', () => {
     if (!refs.audio.src) return;
+    if (audioStartPending) {
+      refs.audioStatus.textContent = 'Session starting · waiting for AMI audio';
+      return;
+    }
     audioMissing = true; audioEnabled = false; refs.audioToggle.setAttribute('aria-pressed', 'false');
     renderControls(); toast('AMI audio could not be loaded from the controller.', 'error');
   });
@@ -445,21 +687,27 @@
     if (refs.audioToggle.disabled) return;
     if (audioEnabled) {
       audioEnabled = false; refs.audio.pause(); refs.audioToggle.setAttribute('aria-pressed', 'false');
-      refs.audioToggle.innerHTML = ' <span aria-hidden="true">♫</span> Preview audio <i></i>';
+      renderAudioControls(latestState || {});
       return;
     }
     const session = latestState && latestState.session;
+    refs.audio.volume = Number(refs.audioVolume.value);
+    refs.audio.muted = false;
     if (session && finite(session.time_s)) {
       try { refs.audio.currentTime = session.time_s; } catch { /* The source initializes at the current session time on metadata load. */ }
     }
     try {
       await refs.audio.play();
       audioEnabled = true; refs.audioToggle.setAttribute('aria-pressed', 'true');
-      refs.audioToggle.innerHTML = ' <span aria-hidden="true">♫</span> Audio on <i></i>';
+      renderAudioControls(latestState || {});
     } catch {
       toast('Audio is unavailable or blocked by this browser.', 'error');
       audioMissing = true; renderControls();
     }
+  });
+  refs.audioVolume.addEventListener('input', () => {
+    refs.audio.volume = Number(refs.audioVolume.value);
+    renderAudioControls(latestState || {});
   });
 
   function openCredits() {
@@ -469,7 +717,9 @@
   $('credits-open').addEventListener('click', openCredits);
   $('credits-open-footer').addEventListener('click', openCredits);
 
-  refs.audioToggle.innerHTML = ' <span aria-hidden="true">♫</span> Preview audio <i></i>';
+  refs.audio.volume = Number(refs.audioVolume.value);
+  renderModelProfile({});
+  renderAudioControls({});
   void fetchState();
   void fetchAgentSnapshot();
   startEvents();

@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#0b111a">
     <title>Noesis · Control room</title>
-    <link rel="stylesheet" href="/static/styles.css">
-    <script src="/static/app.js" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=ai-profile-audio-20260929">
+    <script src="/static/app.js?v=ai-profile-audio-20260929" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -40,6 +40,9 @@
             <label class="select-field"><span>INPUT</span><select id="input-mode" aria-label="Input source"><option value="synthetic">Synthetic test feeds</option><option value="ami">AMI replay</option></select></label>
             <span class="selector-divider" aria-hidden="true"></span>
             <label class="select-field"><span>OUTPUT</span><select id="output-mode" aria-label="Output destination"><option value="preview">Local preview</option><option value="obs">OBS Studio</option></select></label>
+            <span class="selector-divider profile-divider" aria-hidden="true"></span>
+            <label class="select-field model-select-field"><span>AI PROFILE</span><select id="model-profile" aria-label="AI model profile" disabled><option value="">Loading profiles…</option></select></label>
+            <span class="profile-status" id="model-profile-status">Waiting for model configuration</span>
           </div>
           <div class="session-actions">
             <button class="button button-primary" id="start-session" type="button"><span class="button-icon" aria-hidden="true">▶</span> Start session</button>
@@ -68,7 +71,11 @@
               <div class="program-footer">
                 <div class="current-shot"><span class="footer-label">CURRENT SHOT</span><strong id="current-shot-name">No source selected</strong><span id="current-shot-scene">—</span></div>
                 <div class="program-footer-stats"><div><span class="footer-label">CUTS</span><strong id="cuts-count">—</strong></div><div><span class="footer-label">FALLBACKS</span><strong id="fallbacks-count">—</strong></div><div><span class="footer-label">SESSION</span><strong id="session-status">Idle</strong></div></div>
-                <button class="audio-toggle" id="preview-audio-toggle" type="button" aria-pressed="false" title="Enable audio in this preview"> <span aria-hidden="true">♫</span> Preview audio <i></i></button>
+                <div class="preview-audio-controls" aria-label="Control room AMI audio">
+                  <button class="audio-toggle" id="preview-audio-toggle" type="button" aria-pressed="false" title="Mute AMI audio" disabled><span aria-hidden="true">♫</span> Audio off <i></i></button>
+                  <label class="volume-control"><span>VOL</span><input id="preview-audio-volume" type="range" min="0" max="1" step="0.05" value="0.7" aria-label="AMI audio volume" disabled></label>
+                  <span class="audio-status" id="preview-audio-status">AMI audio starts with an AMI session</span>
+                </div>
                 <audio id="preview-audio" preload="none"></audio>
               </div>
             </section>
@@ -87,7 +94,10 @@
           <aside class="side-column">
             <section class="panel crew-panel" aria-labelledby="crew-heading">
               <div class="section-heading compact-heading"><div><p class="eyebrow">DISTRIBUTED CREW</p><h2 id="crew-heading">Agent activity</h2></div><span class="crew-state" id="crew-state">CHECKING</span></div>
-              <div class="crew-summary" id="crew-summary"><span class="crew-avatar crew-avatar-director">D</span><div><strong>Director runtime</strong><span id="flower-summary">Waiting for agent snapshot</span></div></div>
+              <div class="crew-summary" id="crew-summary"><span class="crew-avatar crew-avatar-director">D</span><div><strong>Crew runtime</strong><span id="flower-summary">Waiting for agent snapshot</span></div></div>
+              <div class="grid-run" id="grid-run" hidden aria-live="polite"><span class="grid-run-label">SUPERGRID RUN</span><span class="grid-run-id" id="grid-run-id">No run ID reported</span><span class="grid-run-status" id="grid-run-status">STATUS NOT REPORTED</span></div>
+              <div class="provenance-heading"><span>AI MODEL RESPONSES</span><span id="model-verification-status">NOT VERIFIED</span></div>
+              <div class="ai-provenance" id="ai-provenance" aria-label="Latest model inference status"><div class="empty-inline">Waiting for configured AI roles.</div></div>
               <div class="agent-list" id="agent-list"><div class="empty-inline">No agent heartbeat received yet.</div></div>
               <div class="trace-heading"><span>RECENT TRACE</span><span id="trace-count">—</span></div>
               <ol class="trace-list" id="trace-list" aria-live="polite"><li class="empty-trace">Trace events will appear as the controller reports them.</li></ol>

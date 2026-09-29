@@ -1,7 +1,7 @@
 # Noesis
 ## Autonomous production crew for panel discussions
 
-Updated: 28 September 2026.
+Updated: 29 September 2026.
 
 **Noesis uses Flower agents to follow a conversation, choose camera shots, and control OBS automatically, while a local production controller keeps the program running through camera and agent failures.**
 
@@ -9,7 +9,9 @@ An organizer configures the sources and presses Start. The system directs and re
 
 This document covers the product, architecture, Flower integration, AMI test data, implementation sequence, and demo. Performance values are acceptance targets, not guarantees.
 
-**Implementation:** the local controller, dashboard, shared-clock replay adapter, five separate Flower 1.39.0 AgentApps, and the OBS browser-source bridge are built. Start with `start.ps1 -OBS`; add `-ModelProfile kimi` or `-ModelProfile minimax` for Nebius inference through Flower. Both model profiles passed recorded synthetic rehearsals on 29 September 2026. The default remains model-free rules. The model chooses bounded shot pacing and overlap policy asynchronously; current camera selection and health recovery stay local. A complete 20-second AMI excerpt also works through OBS with camera changes and non-silent audio. A longer AMI editorial evaluation and fine A/V alignment remain outstanding. Operational instructions and measured results are in `README.md` and `docs/VALIDATION.md`.
+**Current architecture:** authenticated Flower SuperGrid with a bounded cloud coordinator and six local SuperNodes: four camera agents, a critic, and a director. Native Flower Grid carries one-reply role jobs. All six roles use AI on compact numeric/categorical source measurements; the models do not receive raw frames, audio, transcripts, or annotation labels. The critic runs in parallel with the four camera roles on current measurements and bounded prior-result history; the Director consumes the four camera reports, critic response, and fresh snapshot. The local controller validates results and enforces source health, replay/model/override epochs, manual latch, and OBS state; it does not rank shots with deterministic speaker rules. Kimi is the default and has passed a live six-role round; MiniMax will not be run for this demo. The launcher requires both model profiles to be configured. Browser control-room playback and the `/program` OBS source share the continuous AMI audio mix. Each coordinator task is capped at 240 seconds. All six nodes are online. Kimi run `96528684490097715` returned six accepted role responses and the Director selected Closeup3; source-health recovery passed in 984 ms and manual override passed. The first 30-second round expired, while a later round completed in about 23 seconds. Renewed run `3067815238044157620` was pending at the last check. A seven-file Flower package was built and secret-checked locally, not published. The full suite has 42 passing tests and the fresh AMI/OBS smoke test passed; a separate short AMI replay ended before an AI cut. See `README.md`, `docs/FLOWER.md`, and `docs/VALIDATION.md` for current evidence.
+
+The remainder of this plan retains earlier product hypotheses and evaluation targets. The current architecture paragraph above and `BUILD_CONTRACT.md` supersede any conflicting local-only, rules-director, or editorial-policy descriptions below.
 
 ## 1. Problem and outcome
 
@@ -37,81 +39,84 @@ Must ship:
 6. Continue conservatively during agent/model outages; show a clear degraded-mode indicator.
 7. Offer a latched manual override and explicit Resume Autopilot action.
 
-A deterministic action validator provides the essential cut checks. Additional event types, highlights, slide understanding, and a separate critic are stretch features after the core loop passes its acceptance checks.
+A deterministic controller provides essential safety and output checks; the AI Director makes editorial camera choices. The critic is one of the six AI roles. Highlights, semantic slide understanding, and broader event support remain future work after the live federation path and core demo are verified.
 
 ## 3. System architecture
 
 ```mermaid
 flowchart TD
-    Media[AMI replay: common clock and continuous audio] --> Perception[Local audio and video workers]
-    Perception --> Cam[Flower Camera AgentApps]
-    Cam -->|Compact timestamped observations| Director[Flower Director AgentApp]
-    Director -->|Expiring shot proposal| Gate[Local action validator and OBS bridge]
-    Perception --> Health[Fast local health and fallback controller]
-    Health --> Gate
-    Operator[Manual override and resume] --> Gate
-    Gate --> OBS[OBS program and recording]
-    Cam --> Trace[Agent trace and dashboard]
-    Director --> Trace
-    Gate --> Trace
+    Media[Shared-clock replay: five views + continuous mix] --> Features[Measured camera/audio features]
+    Features --> Coordinator[Flower SuperGrid coordinator\n240-second task]
+    Coordinator -->|Native one-reply Grid tasks| Cameras[Four camera SuperNodes]
+    Coordinator -->|Native one-reply Grid task| Critic[Critic SuperNode]
+    Cameras -->|Recommendations| Coordinator
+    Critic -->|Assessment| Coordinator
+    Coordinator -->|Five reports + fresh snapshot| Director[Director SuperNode]
+    Director -->|AI camera decision| Controller[Local controller\nhealth, epoch, override, OBS guards]
+    Features --> Controller
+    Operator[Manual override / resume] --> Controller
+    Controller --> Program[Shared program page + continuous AMI audio]
+    Program --> OBS[OBS browser source and recording]
+    Coordinator --> Trace[Live role provenance, run IDs, and dashboard]
+    Controller --> Trace
 ```
 
 ### Responsibilities
 
 | Component | Work | Runtime |
 |---|---|---|
-| Replay controller | Source clock, start/pause/seek, epoch changes, source-to-participant mapping | Local process |
-| Perception workers | VAD, audio levels, decode health, brightness, simple face/framing evidence | Local, independent of LLM calls |
-| Camera AgentApp instances | Own one camera's evidence and history; report availability, framing and shot suitability; reply to Director requests | Flower processes; native SuperNode placement preferred after integration gate |
-| Director AgentApp | Resolve competing observations, maintain editorial state, choose hold/close-up/wide, explain the choice | Flower at SuperLink |
-| Production controller | Validate current health, expire stale commands, enforce override, switch to fallback, verify OBS state | Local deterministic service |
-| Dashboard | Program preview, source health, speaker evidence, executed decision reasons, mode | Small web UI |
+| Replay and feature path | Common media clock; measured speaker activity, energy, quality, and camera health | Local process |
+| Four camera AgentApps | Independently recommend take/hold/avoid from assigned camera measurements | Four authenticated local SuperNodes; model inference through Flower runtime |
+| Critic AgentApp | Assess the current measured round and bounded prior-result history as steady/change/wide, independently of the new camera results | Authenticated local SuperNode; parallel model inference through Flower runtime |
+| Director AgentApp | Read the four camera reports, critic assessment, and fresh snapshot; choose hold or a camera | Authenticated local SuperNode; model inference through Flower runtime |
+| SuperGrid coordinator | Fan out one-reply role tasks, collect their results, ask the Director, and correlate provenance | Bounded cloud Flower run, at most 240 seconds per task |
+| Production controller | Validate current identity, health, deadline, replay/model/override epochs; enforce manual latch; drive the shared program and observe OBS | Local service; deterministic checks only |
+| Dashboard and output page | Show program, live agent/provenance state, controls, continuous mix, and honest degraded state | Local web UI; `/program` is the OBS browser source |
 
-A camera agent need not call a language model on every observation. Numerical perception should be computed directly. An optional image-capable model may interpret ambiguous framing at a low rate only after its availability and latency are verified. In the MVP, the Director can reason over structured evidence using a text model.
+The model prompt receives only compact numeric and categorical features plus the other agents' structured reports. No role receives raw image/audio data, transcripts, or future annotation labels. A camera agent's recommendation is not a ground-truth speaker label; confidence and reasons remain model outputs. The local controller verifies the current target's health and all provenance just before accepting a Director result.
 
 ### Two timing paths
 
-**Fast path:** check capture/decode health approximately every 100–250 ms. If the on-air source becomes unusable, select a healthy fallback immediately. Initial recovery target: within 1 second of injected fault onset. Measure it; it is not a platform guarantee.
+**Control path:** update media time and source-health measurements locally. If the on-air source becomes unusable, the health guard can move to a currently healthy source without waiting for a model. This is source recovery, not an editorial fallback ranking. Measure recovery through the first usable program output; a controller selection alone is not an end-to-end latency result.
 
-**Editorial path:** fast rules proposals follow current camera-agent evidence. A separate Director worker requests a model policy roughly every 10 seconds, with at most one call in flight, a 25-second SDK timeout, and a 30-second controller lease. Completed, schema-valid replies choose minimum shot duration (4–8 seconds) and overlap behavior (`hold` or `wide`) for a 20-second policy. Current evidence is checked again at camera-cut commit. Manual override, pause/seek/session transitions, director heartbeat loss, or expiry remove the policy. Timeout or rejection leaves local directing operational. The SDK timeout covers HTTP operations; the controller lease rejects late replies using its own monotonic clock.
+**Editorial path:** one coordinator round sends four camera jobs and one independent critic job concurrently. The critic receives the current measured round and bounded prior AI report history; it does not consume or wait for the fresh camera replies. The coordinator gathers all five one-reply results and sends them with a fresh source snapshot to the AI Director. The Director chooses hold or a camera, and the controller accepts only a unique, completed, same-round decision for the current healthy target. Each coordinator run has a 240-second cap. Expired or incomplete AI work cannot produce a cut; the controller keeps the healthy current shot. Manual override, pause/seek/session changes, model switching, stale heartbeats, or source failure block stale results.
 
-The implemented model can lengthen shots to avoid short interruptions and select wide or hold behavior during overlap. It receives compact observations, not frames, audio, or transcripts, so semantic visual judgments remain future work. The recorded rehearsals prove policy execution and control safety; editorial improvement over the same system using only VAD, hold rules, and health checks still needs evaluation.
+Kimi is the default model profile; MiniMax is an optional UI selection when configured. Changing models advances the model epoch and invalidates outstanding work while playback continues. A configured profile is not shown as verified until the controller accepts an actual response.
 
 ## 4. Flower integration
 
 ### Runtime and APIs
 
-Flower's AgentApp runtime exposes `AgentSession`, `Context`, runtime model access, connectors, and run events. Its model endpoint credentials are injected inside the AgentApp process; that endpoint is not an external API for the dashboard. `agent.events.emit(...)` publishes trace/UI events, not an application-wide pub/sub bus. Context persistence belongs to a run series, not automatically to every agent. One FAB declares an `agentapp` component or the `serverapp`/`clientapp` pair; do not mix the two. [Runtime documentation](https://flower.ai/docs/agent/explanations/agentapp-runtime.html)
+Flower's AgentApp runtime exposes `AgentSession`, `Context`, Grid messaging, the injected model runtime, and run events. The coordinator and local SuperNodes use actual Flower runs. The model endpoint credentials are injected by Flower and route through the configured gateway; they are not browser state. Noesis uses the authenticated `supergrid` connection and `@thesid42/noesis` federation. [Runtime documentation](https://flower.ai/docs/agent/explanations/agentapp-runtime.html)
 
-Flower 1.38 introduced experimental AgentApps on SuperLink and SuperNodes, with discovery and JSON messaging through Grid tools. The implemented MVP uses separately executed AgentApps and an application-managed local HTTP observation broker; native Grid messaging is a later integration. Keep video in the local media pipeline. [Release announcement](https://preview.flower.ai/blog/2026-09-22-announcing-flower-1.38-release)
+Native Flower Grid carries the coordinator's role tasks and one-reply responses. The local Noesis HTTP API carries compact measured snapshots, heartbeats, and accepted decisions between the SuperNodes and the media/OBS host. It does not replace Grid messaging. Keep raw video and audio on the local media path.
 
-The documented Python interface is `agent.grid.tools()` for schemas and `agent.grid.call(tool_call)` for execution. Discover the actual `get_nodes`, `push_messages`, and `pull_messages` tool schemas in the installed version. Use the returned tool schemas to construct valid calls for the pinned version. [AgentGrid API](https://flower.ai/docs/framework/main/en/ref-api/flwr.agentapp.AgentGrid.html)
+The implementation uses the pinned Flower 1.39.0 Grid tools exposed by `agent.grid.tools()` / `agent.grid.call(...)` to discover nodes, push tasks, pull messages, and return one reply. The coordinator and worker do not share assumptions about a response until it matches the expected node, message, role, and result schema. [AgentGrid API](https://flower.ai/docs/framework/main/en/ref-api/flwr.agentapp.AgentGrid.html)
 
 ### Deployment decision
 
-Run **a local SuperLink**, on the host that can reach the media/OBS bridge. The implemented topology is four camera AgentApps and one Director AgentApp, each submitted as its own Flower run on this laptop. They communicate through the HTTP broker. Demonstrating native SuperNode messaging or a camera agent on a teammate’s laptop is a stretch goal.
+Run the Flower coordinator on SuperGrid and six authenticated local SuperNodes beside the media/OBS bridge. The repository launcher registers the four camera nodes, critic, and Director under the `@thesid42/noesis` federation, waits for all expected nodes online, then starts a coordinator AgentApp with a 240-second run budget. The application-owned local service serves snapshots and executes validated choices; role-to-role work travels through native Grid messaging.
 
-The Community Edition guide supports local AgentApp execution without a SuperGrid account. Model inference requires an endpoint compatible with Open Responses; the implemented rules-mode AgentApps execute without model credentials. It documents `uv run flower-superlink --insecure`, a `local-agent` connection to `127.0.0.1:8000`, and `uv run flwr run . local-agent --stream`. Use one environment for CLI and runtime. Local insecure ports stay on the development host. Provider configuration belongs in the SuperLink environment. [Local setup](https://flower.ai/docs/agent/how-to-guides/run-with-local-superlink.html)
+The event deliverable requires collaborative Flower Agents on SuperGrid and an AgentApp published to Flower Hub. The repository implements the native Grid topology and a 240-second task cap, and all six nodes have been confirmed online in the authenticated federation. Cloud run `96528684490097715` remains `Pending` without execution or logs, so model inference and a full collaborative AI decision are not yet verified. The Hub package has been prepared and secret-checked locally only; it has not been published.
 
-Hosted SuperGrid is an optional deployment, not a prerequisite for the media demo. A hosted process cannot access `E:\...` or the laptop's `localhost`. Moving there requires a reachable authenticated bridge or proven node messaging to a local controller. Keep raw video local in the MVP; transmit compact observations. This reduces transmitted media but does not mean observation text never reaches a hosted model.
+The local SuperNodes reach the media/OBS host at loopback. Only compact measurements and structured reports enter model prompts. Those features and reports are still sent to the selected model provider; they must not be described as staying entirely on the laptop.
 
-### First build gate: 30–45 minutes
+### Remaining integration gate
 
-1. Select and pin the actual available Flower version, matching CLI, runtime, generated template, and SDK. The tutorial checked on 28 September 2026 targets 1.39.0, while the 1.38 release introduced federation support. Confirm the version actually available to the team and keep all components aligned.
-2. Generate the official AgentApp template, build the FAB, and execute one model response through Flower. Use an available model name from the team's account/provider and verify access before selecting it for the demo. [First AgentApp tutorial](https://flower.ai/docs/agent/tutorials/write-your-first-agentapp.html)
-3. Discover Grid schemas. Prove a Director ↔ camera-node JSON request/reply using sequence numbers; save trace, run IDs, node IDs, version, and round-trip time. Verify node-side AgentApp startup using that version's supported procedure. Record the working node startup procedure alongside the project setup instructions.
-4. Prove that the Director process can send an expiring proposal to the local bridge, which acknowledges receipt without yet switching OBS.
-5. Stop a camera agent and show that its data becomes stale while the local controller keeps running.
-
-If native Grid cannot be made operational within the gate, use separately executed Flower AgentApps communicating through our own local HTTP/WebSocket broker. Label it **Flower AgentApps with application-managed messaging**. It remains real Flower execution, with optional model access through the injected Flower runtime endpoint, but does not prove native federation messaging. The model-free mode does not claim an LLM call. If only one AgentApp works, disclose the reduced topology and prioritize getting another genuine agent running over adding UI features.
+1. [x] Verify all six expected SuperNodes are online in the authenticated federation.
+2. Complete an actual coordinator round: four model camera reports, one independent model critic report, and one accepted AI Director decision, all correlated by request and response IDs.
+3. Record the managed coordinator run ID/status, each node ID and role, model/profile, accepted response IDs, latency/token metadata, and the controller's decision event. Redact provider keys and private account data.
+4. Verify that the decision executes only for a current healthy camera, and show the manual latch rejecting any later automatic result until explicit resume.
+5. Exercise the AI timeout path and source-health recovery separately; confirm the program holds a healthy shot when AI is absent and the health guard can leave an unusable camera.
+6. Publish the AgentApp to Flower Hub, then complete the team's registration form, description, repository field, and 3–5 minute demo. Do not claim these external deliverables until their completion is confirmed.
 
 ### Runtime rules for this app
 
-- Use bounded session runs for the demo, with explicit stop handling and finite model/tool budgets. Do not spawn a fresh CLI/FAB run each second.
-- Implement health heartbeats outside any blocking model loop.
-- Keep a bounded observation window and a small shot-history summary; do not resend entire transcripts or video histories.
-- Use runtime model credentials only inside agents; OBS credentials stay in the bridge. Exclude media, secrets, and generated logs from FABs.
-- Emit trace events for observation, proposal, rejection, executed cut, timeout, and fallback. The execution log must distinguish an agent proposal, a controller-confirmed program camera change, and an OBS-confirmed recording/scene state.
+- Keep every coordinator task at 240 seconds or less, and keep any other Flower task within the event's five-minute cap.
+- Keep measured source snapshots and role prompts bounded; do not send raw media, transcripts, annotations, credentials, or unbounded history.
+- Use Flower-injected model runtime credentials and the configured loopback gateway; never expose provider or OBS credentials in UI state, Grid prompts, or public logs.
+- Preserve request, session, replay, model, and override provenance through every result. Reject malformed, duplicate, expired, stale, or wrong-role replies.
+- Emit trace events for task start, accepted camera/critic reports, Director decisions, rejected results, stale/timeout states, manual override, and health recovery. Distinguish a role response from a controller-accepted camera change and from actual OBS recording status.
 
 ## 5. Perception and media pipeline
 
@@ -241,57 +246,40 @@ Do not give the Director a full future transcript. If transcription is later add
 
 ## 7. Decision and OBS execution contract
 
-Use typed application schemas. The following is an illustrative proposal, not a Flower-native message schema:
+Flower-native Grid carries role jobs and replies. The controller API is the local trust boundary; no model result can choose its own request ID, session generation, model generation, or override generation. Each AI result carries the coordinator's round identity, source revision/time, model identity, unique response ID, latency/token counts, role, and a strictly validated result object.
 
-```json
-{
-  "schema_version": 1,
-  "broadcast_id": "demo-001",
-  "epoch": 3,
-  "request_id": "r-042",
-  "decision_id": "d-042",
-  "source": "director",
-  "observation_seq": {"closeup1": 211, "closeup2": 210, "closeup3": 212, "closeup4": 209, "corner": 213},
-  "media_time_ms": 42800,
-  "action": "switch",
-  "target_scene": "LD_Corner",
-  "reason_code": "speaker_view_unusable",
-  "reason": "The speaking participant's close-up is obstructed; the room view remains usable.",
-  "override_epoch": 2
-}
-```
+The four camera results recommend `take`, `hold`, or `avoid`; the critic assesses `steady`, `change`, or `wide`; the Director chooses `hold` or a named camera. The Director must cite exactly the four camera response IDs and one critic response ID from the current round. A model reason is an explanation, not evidence that the camera shows a semantic event.
 
-The bridge issues the decision request ID and stores its deadline using its own monotonic clock. Responses must match that request, broadcast, replay epoch, and override epoch; the model cannot extend the deadline. This avoids comparing monotonic clocks across computers.
+The controller issues the round ID/deadline and validates its current media time using a local monotonic clock. Results must match request, session, replay epoch, model epoch, and operator override epoch. Model switching, session transitions, pause/seek, manual override, or deadline expiry invalidate in-flight results.
 
-Before every action, the bridge checks schema, scene allowlist, deadline, newness, latest target health, current mode, and shot duration. Re-check evidence when newer observations supersede the proposal. Serialize OBS writes and deduplicate decision IDs. Reject stale proposals after a source recovers, fails, or the operator intervenes.
+Before every action, the controller checks role schema, response uniqueness, current heartbeat, deadlines, source revision, current target health, session/model/override epochs, and manual mode. It rereads health before commit. AI chooses the shot; the controller only validates and executes that choice.
 
-Initial policy:
+Controller-protected behavior:
 
-- Normal close-up hold: approximately 4 seconds. Brief interjections do not force a cut.
-- A maximum shot length is a preference, not a reason to abandon a useful speaker shot.
-- Emergency failure recovery bypasses minimum hold time.
-- Healthy Corner is the default uncertainty/failure fallback. If unavailable, use a healthy alternative or a multiview of healthy sources; if none exist, show a branded unavailable slate.
-- Manual override latches until Resume Autopilot. It disables automatic cuts, including automatic fallback; still show health warnings. A late model response cannot undo the override.
+- An expired, incomplete, stale, or rejected AI round cannot cause an editorial cut; retain a healthy current shot.
+- If the current source is unusable, the health guard can select a currently healthy source; the slate is reserved for complete source failure.
+- Manual camera selection stays latched until explicit Resume Autopilot. No pending or late AI response may override it.
+- OBS captures a single `NOESIS_Program` browser source. Internal camera changes are not OBS scene changes; the controller confirms OBS recording state on start/stop.
+- AMI program audio is a persistent track in the browser control room and the OBS page; camera cuts do not restart it.
 
-Use obs-websocket v5 request names: `SetCurrentProgramScene`, `GetCurrentProgramScene`, `StartRecord`, `StopRecord`. These are protocol names; Python wrapper method names may differ. Check request success and resulting scene state; log failures without pretending a cut happened. [Official protocol](https://raw.githubusercontent.com/obsproject/obs-websocket/master/docs/generated/protocol.md)
-
-For this MVP the bridge’s agent-facing action is only hold/switch among allowed camera IDs. OBS stays on the single `NOESIS_Program` scene; internal camera cuts are not described as OBS scene changes. Start/stop of recording belongs to the session controller. Use local recording for the demo; public streaming is unnecessary.
+The OBS bridge reads actual connection and recording status, reports unknown status as unknown, and keeps Stop retryable when a recording stop is not acknowledged. Public streaming is unnecessary.
 
 ## 8. Dashboard and operator workflow
 
 The dashboard should make the program and its operating state immediately understandable:
 
 - **Program preview:** the actual OBS output, with the current scene and recording status.
-- **Source strip:** four participant thumbnails plus Corner, showing availability, speaker evidence, and the age of the latest observation.
-- **Decision timeline:** concise reasons for executed cuts, including whether they came from the Director or the fallback controller. Rejected proposals are visibly separate.
+- **Source strip:** four participant thumbnails plus Corner, showing availability, measured speaker evidence, and observation age.
+- **Agent roster and trace:** four camera roles, critic, Director, current Flower run/node identities, model profile, and each role's accepted response provenance. Pending, timed-out, rejected, and completed results must be distinct.
+- **Decision timeline:** concise reason for each AI Director decision and whether the controller accepted it. Health recovery and rejected results are separate events.
 - **Operating mode:** Autopilot, Manual, or Degraded, with a clear explanation when a dependency is unavailable.
 - **Controls:** Start Session, Stop Session, scene selection for manual override, Resume Autopilot, and labeled test-fault controls.
 - **Credits:** accessible AMI attribution and a clear label that the demo uses real-time replay of recorded footage.
 
 Session flow:
 
-1. Load the source manifest and confirm the required cameras, audio mix, Flower connection, and OBS scenes are ready.
-2. Prime the media sources on the common timeline, start recording, and enter Autopilot.
+1. Confirm the six SuperNodes are online, the selected model profile is configured, required media is ready, and OBS is connected if chosen.
+2. Start one shared-clock session and confirm its audio/program output. Enter Autopilot only when six current AI-role heartbeats are present.
 3. Show scene changes and source health without asking the operator to confirm routine decisions.
 4. If the operator selects a scene, latch Manual mode and invalidate outstanding automatic decisions.
 5. Resume Autopilot explicitly; obtain fresh observations before making the next automatic cut.
@@ -299,7 +287,7 @@ Session flow:
 
 ## 9. Build sequence and ownership
 
-Suggested split for two teammates; durations are planning estimates, not a confirmed event schedule.
+Original suggested split for two teammates; durations are planning estimates, not execution status or a confirmed event schedule.
 
 | Stage | Person A | Person B | Exit evidence |
 |---|---|---|---|
@@ -322,7 +310,7 @@ Use a development clip and a separate evaluation interval with thresholds fixed.
 | Autonomous operation | Full selected clip without required human cut approvals |
 | A/V synchronization | Measured discrepancy below 100 ms at three points; continuous audio across cuts |
 | Active source black/dropout | Usable fallback visible within 1 second of injected onset in at least 95% of repeated trials |
-| Agent/model outage | No queued stale cuts; local baseline continues and UI marks degraded operation |
+| Agent/model outage | No queued stale cuts; retain a healthy current shot and mark the roster degraded |
 | Stale/duplicate decisions | Zero executed actions from an old epoch, expired request, or duplicate ID |
 | Manual override | Zero automatic cuts until explicit resume, including delayed responses |
 | Speaker following | Report eligible single-speaker duration on correct close-up, coverage, and handoff delay; provisional target ≥80% correct close-up coverage on the chosen evaluation interval |
@@ -346,7 +334,7 @@ Inject faults into the shared source path so that perception and OBS receive the
 | Repeated frame payload with advancing timestamps | Flag suspected freeze using combined evidence; measure false positives |
 | Corner unavailable plus close-up fault | Use another healthy option or slate; never assume wide is healthy |
 | Camera AgentApp stopped | Expire its evidence and remain operational |
-| Director/model delayed beyond deadline | Drop late answer; continue baseline and display degraded mode |
+| Director/model delayed beyond deadline | Drop late answer, retain a healthy current shot, and display degraded mode |
 | Manual override during outstanding decision | No automatic cut until resume; late response rejected |
 | Duplicate, out-of-order, or old-epoch response | Zero execution of invalid commands |
 | Pause, seek, and resume | All sources realign; prior decisions invalidated |
@@ -359,8 +347,8 @@ For black/dropout latency, use repeated injections at different eligible on-air 
 Compare three modes on identical intervals:
 
 1. Always Corner: continuity reference.
-2. VAD/normalized microphone score + hold + health rules: simple automatic-director baseline.
-3. Flower agents + editorial Director with the same perception and fallback controller.
+2. Offline VAD/normalized-microphone + hold + health baseline, used only for evaluation and not as Noesis's runtime director.
+3. The six-role Flower SuperGrid team with the same media interval and local health/manual safeguards.
 
 Report:
 
@@ -373,41 +361,43 @@ Report:
 
 Use a separate held-out time interval for evaluation; do not tune thresholds on every measured failure and report the same interval as independent validation. With only ES2002a, conclusions are limited to a small controlled replay. Validate a second meeting or a real two-camera conversation later before claiming broad event coverage.
 
-## 11. Two-minute judge demo
+## 11. Three-to-five-minute judge demo
 
-1. **Problem and start:** “Small panels have cameras but no one to direct them. Noesis runs the program automatically.” Start replay and show the actual program output.
-2. **Conversation:** show a sustained speaker change, a short interruption held appropriately, and agent observations behind the resulting cuts.
-3. **Resilience:** visibly inject a camera blackout. Show the output recover and the measured delay. Label the injection as a test.
-4. **Collaboration:** show genuine Flower run/node identities and exchanged observations. Use a real disagreement only if one occurs; do not fabricate debate or confidence values.
-5. **Control and result:** briefly demonstrate the override latch, resume, and show the recorded output with credits.
+1. **Problem and output:** state that small panels have cameras but often no dedicated director. Start the shared replay and show the actual program page and continuous audio.
+2. **SuperGrid collaboration:** show the real coordinator run and six node identities. Follow one round through four camera results, the critic, and the AI Director decision; call out that model input is measured evidence, not raw video/audio.
+3. **Resilience:** inject a labeled camera fault. Show the actual source-health warning and output recovery; report only a measured latency and say what event it measures.
+4. **Operator control:** select a manual camera, show that the choice remains latched, then explicitly resume Autopilot.
+5. **Result and delivery:** show actual OBS output/recording and AMI credits. Keep the presentation between 3 and 5 minutes and do not show private keys or claim Hub/form completion until confirmed.
 
 The strongest claim to earn is: **autonomous directing that remains usable when observations conflict or a component fails.** AMI demonstrates controlled discussion replay; it does not validate sports, concerts, or arbitrary live venues.
 
 ## 12. Stretch features
 
-Add these in priority order only after the autonomous directing loop is reliable:
+Add these only after the current SuperGrid AI round is proven and the required submission is complete:
 
-1. Run a camera AgentApp on a teammate's machine and demonstrate its real contribution through Flower messaging.
-2. Add low-rate visual interpretation for ambiguous framing or occlusion, using a verified image-capable model.
-3. Add optional directing styles, such as longer holds for a formal panel or more frequent room views during discussion.
-4. Generate timestamped highlight markers from events already observed, then assemble a reel after recording.
-5. Add an asynchronous critic that audits decisions without blocking the live output.
-6. Test another meeting and a real two-camera conversation before expanding to new event types.
+1. Publish and verify the AgentApp through Flower Hub, then validate a repeatable live SuperGrid run.
+2. Prepare and evaluate a longer AMI excerpt with measured alignment and repeated trials.
+3. Run SuperNodes across multiple physical machines if the federation supports it and network conditions are measured.
+4. Test another meeting and a real two-camera conversation before expanding to new event types.
+5. Explore image-capable perception only as a separate feature, with explicit validation and honest data-flow disclosure.
 
 ## 13. Completion checklist
 
-- [x] Flower 1.39.0 and five separate AgentApp runs proved through the application-managed HTTP broker; real rules-director cuts recorded.
-- [x] Nebius Kimi and MiniMax inference verified through Flower, including accepted policies, policy-guided camera cuts, OBS recording, fault recovery, and manual override.
-- [x] Complete 20-second prepared AMI excerpt acquired; source hashes and derivative decoding recorded.
-- [ ] Longer 2–3 minute AMI segment acquired and fine A/V alignment measured.
-- [ ] Weak ES2002a microphone identified; any lapel replacement mapped and measured.
-- [x] Causal perception separated from reference annotations; decoder/VAD and fault fixtures tested.
-- [x] Actual OBS video and non-silent persistent program audio verified in the 20-second AMI recording.
-- [ ] Fine audio continuity and lip sync measured across a longer sequence of cuts.
-- [ ] Evaluation targets measured, including timeout and stale-override races.
-- [ ] Current event submission requirements and judging criteria confirmed against the organizer's brief.
-- [x] AMI credit included in the dashboard, README, and exported demonstration.
-- [x] Generated-input demo rehearsed and a backup OBS recording saved; manual latch, pause, EOF, agent outage, and external OBS stop tested.
-- [ ] Full real-footage demo rehearsed after AMI acquisition and synchronization checks.
+- [x] Six SuperNode identities registered and online in authenticated federation `@thesid42/noesis`.
+- [x] Coordinator and worker code use native Flower Grid tasks/replies; each coordinator task is capped at 240 seconds.
+- [x] Kimi cloud run `96528684490097715` produced six accepted role responses and a Director choice of Closeup3.
+- [ ] Capture a Kimi Director cut in an AMI OBS recording before EOF; a short crew-active replay ended without a cut.
+- [ ] MiniMax remains unverified and will not be run for this demo.
+- [ ] Current AI decision recorded through OBS with continuous AMI audio.
+- [x] Local seven-file AgentApp package built and secret-checked with zero matches.
+- [ ] AgentApp published to Flower Hub (currently kept local; no publication performed).
+- [ ] Team registration form, final team description, and GitHub repository submission completed.
+- [ ] Required 3–5 minute demo prepared and rehearsed.
+- [ ] Longer 2–3 minute AMI segment acquired; fine A/V alignment and repeated source-recovery latency measured.
+- [x] Fresh AMI/OBS smoke test: five healthy feeds; 20.03 seconds video, 19.93 seconds audio, peak 0.427734, RMS 0.032029, finalized at EOF. Browser audio played unmuted for 6.6 seconds.
+- [x] A second 20.17-second crew-active AMI replay completed audio/video (peak 0.4282, RMS 0.031995); it reached EOF before an AI camera decision arrived.
+- [ ] Evaluation targets measured on held-out footage, including stale-result rejection, model timeout, and manual override.
+- [x] AMI attribution is included in the dashboard and README.
+- [x] Full test suite: 42 passed.
 
-Current local evidence is in `docs/VALIDATION.md`: 40 passing regression tests and successful Kimi and MiniMax synthetic recordings of 38.83 and 39.23 seconds. Each model's rehearsal accepted three policies and applied policy on four cuts. Single black-frame trials selected fallback in 1,015 and 969 ms respectively; repeated visible-output latency and the table's editorial/A/V targets are still unmeasured.
+Current test and integration status is maintained in `docs/VALIDATION.md`. Previous five-run HTTP-broker and model-policy rehearsals are historical and are not evidence for the current six-role native SuperGrid topology.

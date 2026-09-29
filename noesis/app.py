@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from .controller import ControllerError, DirectorController
+from .ai_control import AIResultBody
 from .obs_bridge import SimpleOBSBridge
 
 
@@ -52,7 +53,7 @@ class FaultBody(BaseModel):
 class HeartbeatBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_id: str = Field(min_length=1, max_length=120)
-    role: Literal["camera", "director"]
+    role: Literal["camera", "director", "critic"]
     runtime: str = Field(min_length=1, max_length=120)
     run_id: str | None = Field(default=None, max_length=200)
     camera_id: str | None = Field(default=None, max_length=64)
@@ -66,22 +67,9 @@ class ObservationBody(BaseModel):
     observation: dict[str, Any]
 
 
-class EditorialBody(BaseModel):
+class ModelSelectBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    agent_id: str = Field(min_length=1, max_length=120)
-    request_id: str = Field(min_length=1, max_length=160)
-    session_id: str = Field(min_length=1, max_length=160)
-    epoch: int = Field(ge=0)
-    override_epoch: int = Field(ge=0)
-    policy_id: str = Field(min_length=1, max_length=160)
-    min_shot_s: float = Field(ge=4, le=8)
-    overlap_mode: Literal["hold", "wide"]
-    reason: str = Field(min_length=1, max_length=400)
-    model: str = Field(min_length=1, max_length=160)
-    response_id: str = Field(min_length=1, max_length=200)
-    latency_ms: float = Field(ge=0, le=30000)
-    input_tokens: int = Field(default=0, ge=0)
-    output_tokens: int = Field(default=0, ge=0)
+    profile: Literal["kimi", "minimax"]
 
 
 class MissingMedia:
@@ -166,6 +154,8 @@ def create_app(
         media_engine,
         obs_bridge,
         model_name=os.getenv("NOESIS_MODEL") or None,
+        model_catalog=json.loads(os.getenv("NOESIS_MODEL_CATALOG_JSON", "null")),
+        model_profile=os.getenv("NOESIS_MODEL_PROFILE") or "kimi",
     )
     should_auto_connect = (
         os.getenv("OBS_AUTOCONNECT", "false").strip().lower() in {"1", "true", "yes"}
@@ -289,21 +279,21 @@ def create_app(
     async def agent_observation(body: ObservationBody) -> dict[str, Any]:
         return await director.camera_observation(body.model_dump())
 
-    @app.post("/api/agents/proposal")
-    async def agent_proposal(body: dict[str, Any]) -> dict[str, Any]:
-        return await director.accept_proposal(body)
+    @app.post("/api/models/select")
+    async def select_model(body: ModelSelectBody) -> dict[str, Any]:
+        return await director.select_model(body.profile)
 
-    @app.get("/api/agents/request")
-    async def agent_request() -> dict[str, Any] | None:
-        return await director.current_request()
+    @app.get("/api/ai/round")
+    async def ai_round() -> dict[str, Any] | None:
+        return await director.ai_round()
 
-    @app.get("/api/agents/editorial")
-    async def editorial_request() -> dict[str, Any] | None:
-        return await director.editorial_request()
+    @app.post("/api/ai/report")
+    async def ai_report(body: AIResultBody) -> dict[str, Any]:
+        return await director.accept_ai_report(body.model_dump(exclude_none=True))
 
-    @app.post("/api/agents/editorial")
-    async def editorial_policy(body: EditorialBody) -> dict[str, Any]:
-        return await director.accept_editorial_policy(body.model_dump())
+    @app.post("/api/ai/decision")
+    async def ai_decision(body: AIResultBody) -> dict[str, Any]:
+        return await director.accept_ai_decision(body.model_dump(exclude_none=True))
 
     @app.get("/program", response_class=HTMLResponse)
     async def program_page() -> Response:

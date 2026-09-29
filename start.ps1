@@ -1,7 +1,7 @@
 param(
     [switch]$PreviewOnly,
     [switch]$OBS,
-    [ValidateSet('kimi', 'minimax')][string]$ModelProfile
+    [ValidateSet('kimi', 'minimax')][string]$ModelProfile = 'kimi'
 )
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot

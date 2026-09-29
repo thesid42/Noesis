@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 from io import BytesIO
 
 import pytest
@@ -10,9 +9,7 @@ from PIL import Image
 
 from noesis.controller import CAMERA_IDS, ControllerError, DirectorController
 
-
 PARTICIPANTS = {"closeup1": "A", "closeup2": "C", "closeup3": "D", "closeup4": "B"}
-
 
 class FakeMedia:
     def __init__(self) -> None:
@@ -93,7 +90,6 @@ class FakeMedia:
     def availability(self):
         return {"ami_available": True, "missing_files": [], "credits": "AMI test fixture"}
 
-
 class FakeOBS:
     def __init__(self, media=None):
         self.media = media
@@ -125,14 +121,12 @@ class FakeOBS:
     async def poll_status(self):
         return self.snapshot()
 
-
 async def make_controller(*, output_mode="preview", **kwargs):
     media = FakeMedia()
     obs = FakeOBS(media)
     controller = DirectorController(media, obs, **kwargs)
     await controller.session_start("synthetic", output_mode)
     return controller, media, obs
-
 
 @pytest.mark.asyncio
 async def test_pause_response_reports_the_actual_frozen_clock():
@@ -143,7 +137,6 @@ async def test_pause_response_reports_the_actual_frozen_clock():
     assert paused["session"]["time_s"] == 2.75
     await controller.tick()
     assert (await controller.get_state())["session"]["time_s"] == 2.75
-
 
 @pytest.mark.asyncio
 async def test_new_session_metrics_and_trace_exclude_previous_session():
@@ -157,7 +150,6 @@ async def test_new_session_metrics_and_trace_exclude_previous_session():
     assert restarted["metrics"]["cuts"] == 1  # Initial usable camera, only.
     assert all(e["session_id"] == restarted["session"]["id"] for e in restarted["events"])
 
-
 @pytest.mark.asyncio
 async def test_paused_recording_label_is_truthful(monkeypatch):
     controller, _, obs = await make_controller(output_mode="obs")
@@ -168,7 +160,6 @@ async def test_paused_recording_label_is_truthful(monkeypatch):
     assert obs.recording
     assert "REPLAY PAUSED" in labels[0]
     assert "NOT RECORDING" not in labels[0]
-
 
 @pytest.mark.asyncio
 async def test_unconfirmed_recording_stop_is_retryable_after_reconnect():
@@ -193,113 +184,6 @@ async def test_unconfirmed_recording_stop_is_retryable_after_reconnect():
     assert retried["obs"]["stop_pending"] is False
     assert obs.recording is False
 
-
-async def connect_flower(controller: DirectorController):
-    await controller.heartbeat({
-        "agent_id": "camera-closeup1",
-        "role": "camera",
-        "runtime": "Flower AgentApp",
-        "run_id": "cam-run-1",
-        "camera_id": "closeup1",
-        "decision_mode": "rules",
-    })
-    await controller.heartbeat({
-        "agent_id": "director-main",
-        "role": "director",
-        "runtime": "Flower AgentApp",
-        "run_id": "director-run-1",
-        "decision_mode": "rules",
-    })
-
-
-async def get_pending_for_closeup1(controller: DirectorController):
-    media = controller.media
-    media.cameras["closeup1"]["speaking"] = True
-    media.cameras["closeup1"]["energy"] = 0.9
-    await controller.tick()
-    await asyncio.sleep(0.27)
-    await controller.tick()
-    pending = await controller.current_request()
-    assert pending is not None
-    return pending
-
-
-def proposal_for(pending, **updates):
-    body = {
-        "schema_version": 1,
-        "agent_id": "director-main",
-        "request_id": pending["request_id"],
-        "session_id": pending["session_id"],
-        "epoch": pending["epoch"],
-        "override_epoch": pending["override_epoch"],
-        "observation_revision": pending["observation_revision"],
-        "decision_id": "decision-1",
-        "action": "switch",
-        "camera_id": "closeup1",
-        "reason": "The current speaker has sustained evidence.",
-    }
-    body.update(updates)
-    return body
-
-
-@pytest.mark.asyncio
-async def test_proposal_checks_epoch_health_and_duplicate_decisions():
-    controller, media, _obs = await make_controller(min_shot_s=0.0)
-    await connect_flower(controller)
-    pending = await get_pending_for_closeup1(controller)
-
-    with pytest.raises(ControllerError, match="old session epoch"):
-        await controller.accept_proposal(proposal_for(pending, epoch=pending["epoch"] - 1))
-    assert (await controller.get_state())["program"]["camera_id"] == "corner"
-
-    accepted = await controller.accept_proposal(proposal_for(pending))
-    assert accepted["executed"] is True
-    assert accepted["confirmed_by"] == "controller_program_clock"
-    assert (await controller.get_state())["program"]["camera_id"] == "closeup1"
-    with pytest.raises(ControllerError, match="no pending"):
-        await controller.accept_proposal(proposal_for(pending, decision_id="decision-2"))
-
-    # A new request targeting an unhealthy source is rejected even when the
-    # request's original evidence was valid.
-    media.cameras["closeup2"]["speaking"] = True
-    media.cameras["closeup2"]["energy"] = 1.0
-    media.cameras["closeup1"]["speaking"] = False
-    await controller.tick()
-    await asyncio.sleep(0.27)
-    await controller.tick()
-    next_pending = await controller.current_request()
-    assert next_pending is not None
-    media.cameras["closeup2"]["healthy"] = False
-    media.cameras["closeup2"]["status"] = "offline"
-    await controller.tick()
-    with pytest.raises(ControllerError, match="unhealthy"):
-        await controller.accept_proposal(proposal_for(next_pending, decision_id="decision-3", camera_id="closeup2"))
-
-    state = await controller.get_state()
-    assert state["metrics"]["rejected_proposals"] >= 3
-
-
-@pytest.mark.asyncio
-async def test_manual_latch_wins_against_late_reply_and_blocks_fallback():
-    controller, media, _obs = await make_controller(min_shot_s=0.0)
-    await connect_flower(controller)
-    pending = await get_pending_for_closeup1(controller)
-    await controller.manual_override("closeup4")
-
-    late = proposal_for(pending)
-    with pytest.raises(ControllerError, match="pending director request"):
-        await controller.accept_proposal(late)
-    media.cameras["closeup4"]["healthy"] = False
-    media.cameras["closeup4"]["status"] = "offline"
-    media.cameras["closeup1"]["speaking"] = True
-    await controller.tick()
-
-    state = await controller.get_state()
-    assert state["mode"] == "manual"
-    assert state["program"]["camera_id"] == "closeup4"
-    assert not state["events"][0]["kind"] == "fallback_cut"
-
-
 @pytest.mark.asyncio
 async def test_health_failure_recovers_immediately_in_degraded_mode():
     controller, media, _obs = await make_controller()
@@ -310,48 +194,6 @@ async def test_health_failure_recovers_immediately_in_degraded_mode():
     assert state["program"]["camera_id"] == "closeup1"
     assert state["metrics"]["fallbacks"] == 1
     assert state["events"][0]["kind"] == "fallback_cut"
-
-
-@pytest.mark.asyncio
-async def test_seek_invalidates_pending_request_and_preserves_one_clock():
-    controller, media, _obs = await make_controller(min_shot_s=0.0)
-    await connect_flower(controller)
-    pending = await get_pending_for_closeup1(controller)
-    old_epoch = pending["epoch"]
-
-    state = await controller.session_seek(21.5)
-    assert state["session"]["time_s"] == 21.5
-    assert state["session"]["epoch"] == old_epoch + 1
-    assert await controller.current_request() is None
-    with pytest.raises(ControllerError, match="pending director request"):
-        await controller.accept_proposal(proposal_for(pending))
-
-
-@pytest.mark.asyncio
-async def test_rules_only_flower_heartbeats_are_reported_without_llm_claim():
-    controller, _media, _obs = await make_controller()
-    await connect_flower(controller)
-    flower = (await controller.get_state())["flower"]
-    assert flower["status"] == "connected"
-    assert flower["decision_modes"]["director"] == "rules"
-    assert flower["model_status"] == "not_configured"
-    assert (await controller.get_state())["mode"] == "autopilot"
-
-
-@pytest.mark.asyncio
-async def test_local_baseline_does_not_wait_for_flower_or_model():
-    controller, media, _obs = await make_controller(min_shot_s=0.0, speaker_confirm_s=0.05)
-    media.cameras["closeup2"]["speaking"] = True
-    media.cameras["closeup2"]["energy"] = 1.0
-    await controller.tick()
-    await asyncio.sleep(0.08)
-    await controller.tick()
-
-    state = await controller.get_state()
-    assert state["mode"] == "degraded"
-    assert state["program"]["camera_id"] == "closeup2"
-    assert state["program"]["reason"].endswith("local directing baseline.")
-
 
 @pytest.mark.asyncio
 async def test_camera_observation_accepts_recent_source_revision_and_rejects_future():
@@ -379,7 +221,6 @@ async def test_camera_observation_accepts_recent_source_revision_and_rejects_fut
             "observation": {"speaking": False},
         })
 
-
 @pytest.mark.asyncio
 async def test_stop_invalidates_decisions_and_stops_obs_recording():
     controller, _media, obs = await make_controller(output_mode="obs")
@@ -388,7 +229,6 @@ async def test_stop_invalidates_decisions_and_stops_obs_recording():
     await controller.session_stop()
     assert not obs.recording
     assert (await controller.get_state())["session"]["status"] == "stopped"
-
 
 @pytest.mark.asyncio
 async def test_start_at_or_past_duration_is_rejected_before_obs_recording():
@@ -406,13 +246,10 @@ async def test_start_at_or_past_duration_is_rejected_before_obs_recording():
     assert not obs.recording
     assert obs.media_status_during_record_start is None
 
-
 @pytest.mark.asyncio
-async def test_natural_media_eof_stops_session_recording_and_pending_work():
-    controller, media, obs = await make_controller(output_mode="obs", min_shot_s=0.0)
-    await connect_flower(controller)
-    pending = await get_pending_for_closeup1(controller)
-    assert pending is not None and obs.recording
+async def test_natural_media_eof_stops_session_recording():
+    controller, media, obs = await make_controller(output_mode="obs")
+    assert obs.recording
 
     media.time_s = media.duration_s
     media.status = "stopped"
@@ -422,9 +259,7 @@ async def test_natural_media_eof_stops_session_recording_and_pending_work():
     assert state["session"]["status"] == "stopped"
     assert state["session"]["time_s"] == state["session"]["duration_s"]
     assert not obs.recording
-    assert await controller.current_request() is None
     assert any(event["kind"] == "session_ended" for event in state["events"])
-
 
 @pytest.mark.asyncio
 async def test_seek_to_or_past_duration_finalizes_even_when_paused():
@@ -436,7 +271,6 @@ async def test_seek_to_or_past_duration_finalizes_even_when_paused():
     assert state["session"]["status"] == "stopped"
     assert not obs.recording
     assert any(event["kind"] == "session_ended" for event in state["events"])
-
 
 @pytest.mark.asyncio
 async def test_obs_poll_is_separate_and_tracks_manual_stop_and_closes_cleanly():
@@ -455,12 +289,9 @@ async def test_obs_poll_is_separate_and_tracks_manual_stop_and_closes_cleanly():
     assert controller._task is None and controller._obs_task is None
     assert controller_task.done() and obs_task.done()
 
-
 @pytest.mark.asyncio
-async def test_inflight_seek_rejects_old_decisions_and_cross_epoch_observations():
-    controller, media, _obs = await make_controller(min_shot_s=0.0)
-    await connect_flower(controller)
-    pending = await get_pending_for_closeup1(controller)
+async def test_inflight_seek_rejects_cross_epoch_observations():
+    controller, media, _obs = await make_controller()
     snapshot = await controller.agents_snapshot()
     began, release = threading.Event(), threading.Event()
     seek = media.seek
@@ -475,20 +306,17 @@ async def test_inflight_seek_rejects_old_decisions_and_cross_epoch_observations(
     try:
         assert await asyncio.to_thread(began.wait, 2)
         with pytest.raises(ControllerError, match="transition"):
-            await controller.accept_proposal(proposal_for(pending))
-        with pytest.raises(ControllerError, match="transition"):
             await controller.agents_snapshot()
         stale = {"camera_id": "closeup1", "source_observation_revision": snapshot["observation_revision"],
-                 "observation": {"session_id": pending["session_id"], "epoch": pending["epoch"] + 1, "speaking": True}}
+                 "observation": {"session_id": snapshot["session_id"], "epoch": snapshot["epoch"], "speaking": True}}
         with pytest.raises(ControllerError, match="transition"):
             await controller.camera_observation(stale)
     finally:
         release.set()
         await transition
-    with pytest.raises(ControllerError, match="unknown or expired"):
+    with pytest.raises(ControllerError, match="old session epoch"):
         await controller.camera_observation(stale)
     assert (await controller.get_state())["program"]["camera_id"] == "corner"
-
 
 @pytest.mark.asyncio
 async def test_quiet_camera_recovery_leaves_slate_without_speaker_evidence():
@@ -499,139 +327,4 @@ async def test_quiet_camera_recovery_leaves_slate_without_speaker_evidence():
     assert (await controller.get_state())["program"]["camera_id"] == "slate"
     media.cameras["corner"].update(healthy=True, status="healthy")
     await controller.tick()
-    assert (await controller.get_state())["program"]["camera_id"] == "corner"
-
-
-async def editorial_fixture():
-    controller, media, obs = await make_controller(model_name="test-model")
-    await controller.heartbeat({"agent_id": "director", "role": "director", "runtime": "flower",
-                                "run_id": "123", "decision_mode": "llm"})
-    now = time.monotonic()
-    for camera_id in CAMERA_IDS[:4]:
-        controller._camera_observations[camera_id] = {
-            "camera_id": camera_id, "source_observation_revision": media.revision,
-            "observation": {"session_id": controller._session["id"], "epoch": controller._session["epoch"],
-                            "healthy": True, "speaking": False},
-        }
-        controller._camera_observation_mono[camera_id] = now
-    request = await controller.editorial_request()
-    assert request is not None
-    body = {key: request[key] for key in ("request_id", "session_id", "epoch", "override_epoch")}
-    body.update(agent_id="director", policy_id="policy-test", min_shot_s=6.0, overlap_mode="wide",
-                reason="Use room context for overlap with calm pacing.", model="test-model",
-                response_id="resp-test", latency_ms=1800, input_tokens=80, output_tokens=30)
-    return controller, media, obs, body
-
-
-@pytest.mark.asyncio
-async def test_editorial_policy_controls_pacing_but_never_delays_health():
-    controller, media, _, body = await editorial_fixture()
-    accepted = await controller.accept_editorial_policy(body)
-    assert accepted["policy"]["expires_in_ms"] > 19000
-    assert controller._effective_min_shot(time.monotonic()) == 6.0
-    media.cameras["closeup1"]["speaking"] = True
-    media.time_s = 5.0
-    await controller.tick()
-    controller._speaker_candidate_since = time.monotonic() - 1.0
-    await controller.tick()
-    assert (await controller.get_state())["program"]["camera_id"] == "corner"
-    media.time_s = 6.1
-    await controller.tick()
-    state = await controller.get_state()
-    assert state["program"]["camera_id"] == "closeup1"
-    assert state["metrics"]["policy_guided_cuts"] == 1
-    assert state["program"]["editorial_policy_id"] == "policy-test"
-    media.cameras["closeup1"]["healthy"] = False
-    media.cameras["closeup1"]["status"] = "black"
-    media.time_s = 6.2
-    await controller.tick()
-    state = await controller.get_state()
-    assert state["program"]["camera_id"] != "closeup1"
-    assert state["metrics"]["fallbacks"] == 1
-
-
-@pytest.mark.asyncio
-async def test_editorial_policy_uses_current_overlap_and_expires():
-    controller, media, _, body = await editorial_fixture()
-    await controller.accept_editorial_policy(body)
-    cameras = media.cameras
-    cameras["closeup1"]["speaking"] = cameras["closeup2"]["speaking"] = True
-    assert controller._speaker_camera(cameras) == "corner"
-    cameras["corner"]["healthy"] = False
-    assert controller._speaker_camera(cameras) is None
-    controller._editorial_policy["expires_mono"] = time.monotonic() - 1
-    assert controller._effective_min_shot(time.monotonic()) == 4.0
-    assert (await controller.get_state())["flower"]["editorial_policy"] is None
-
-
-@pytest.mark.asyncio
-async def test_editorial_policy_rejects_old_manual_epoch_and_duplicate():
-    controller, _, _, body = await editorial_fixture()
-    await controller.manual_override("corner")
-    await controller.resume_autopilot()
-    with pytest.raises(ControllerError):
-        await controller.accept_editorial_policy(body)
-    controller, _, _, body = await editorial_fixture()
-    await controller.accept_editorial_policy(body)
-    with pytest.raises(ControllerError):
-        await controller.accept_editorial_policy(body)
-
-
-@pytest.mark.asyncio
-async def test_editorial_policy_rejects_wrong_model_late_and_unsafe_bounds():
-    controller, _, _, body = await editorial_fixture()
-    with pytest.raises(ControllerError):
-        await controller.accept_editorial_policy({**body, "model": "wrong-profile"})
-    with pytest.raises(ControllerError):
-        await controller.accept_editorial_policy({**body, "min_shot_s": float("nan")})
-    controller._editorial_pending.deadline_mono = time.monotonic() - 1
-    with pytest.raises(ControllerError):
-        await controller.accept_editorial_policy(body)
-
-
-@pytest.mark.asyncio
-async def test_editorial_policy_drops_on_director_outage_and_seek():
-    controller, _, _, body = await editorial_fixture()
-    await controller.accept_editorial_policy(body)
-    controller._agent_seen_mono["director"] = time.monotonic() - 20
-    assert controller._effective_min_shot(time.monotonic()) == 4.0
-    controller, _, _, body = await editorial_fixture()
-    await controller.session_seek(4.0)
-    with pytest.raises(ControllerError):
-        await controller.accept_editorial_policy(body)
-
-
-@pytest.mark.asyncio
-async def test_new_editorial_policy_cancels_fast_request_and_overlap_blocks_late_cut():
-    controller, media, _, body = await editorial_fixture()
-    media.cameras["closeup1"]["speaking"] = True
-    media.time_s = 9.0
-    await controller.tick()
-    controller._new_pending_request("closeup1", time.monotonic())
-    original = await controller.current_request()
-    await controller.accept_editorial_policy({**body, "overlap_mode": "hold"})
-    assert await controller.current_request() is None
-    with pytest.raises(ControllerError):
-        await controller.accept_proposal(proposal_for(original, agent_id="director"))
-    controller._new_pending_request("closeup1", time.monotonic())
-    pending = await controller.current_request()
-    media.cameras["closeup2"]["speaking"] = True
-    await controller.tick()
-    with pytest.raises(ControllerError, match="current speaker evidence"):
-        await controller.accept_proposal(proposal_for(pending, agent_id="director"))
-    assert (await controller.get_state())["program"]["camera_id"] == "corner"
-
-
-@pytest.mark.asyncio
-async def test_baseline_commit_rechecks_new_policy_after_waiting_for_lock():
-    controller, media, _, body = await editorial_fixture()
-    media.cameras["closeup1"]["speaking"] = True
-    media.time_s = 5.0
-    await controller.tick()
-    await controller._action_lock.acquire()
-    cut = asyncio.create_task(controller._automatic_cut("closeup1", reason="Old baseline decision", source="baseline"))
-    await asyncio.sleep(0)
-    await controller.accept_editorial_policy(body)
-    controller._action_lock.release()
-    assert await cut is False
     assert (await controller.get_state())["program"]["camera_id"] == "corner"
