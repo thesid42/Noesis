@@ -12,6 +12,7 @@
   const refs = {
     connection: $('connection-indicator'), connectionLabel: $('connection-label'),
     modeCard: $('mode-card'), modeTitle: $('mode-title'), modeDetail: $('mode-detail'),
+    controlStatus: $('control-status'),
     inputMode: $('input-mode'), outputMode: $('output-mode'), modelProfile: $('model-profile'),
     broadcastDelay: $('broadcast-delay'), broadcastStatus: $('broadcast-status'), broadcastMetrics: $('broadcast-metrics'),
     perceptionStatus: $('perception-status'), transcriptPreview: $('transcript-preview'),
@@ -20,10 +21,11 @@
     pause: $('pause-session'), stop: $('stop-session'), resume: $('resume-autopilot'),
     programImage: $('program-image'), previewPlaceholder: $('preview-placeholder'), stage: $('program-stage'),
     outputChip: $('output-chip'), previewWatermark: $('preview-watermark'), liveChip: $('live-chip'),
-    stageLive: $('stage-live'), sessionTime: $('session-time'), sceneKicker: $('scene-kicker'),
-    programCamera: $('program-camera'), programReason: $('program-reason'),
+    stageLive: $('stage-live'), sessionTime: $('session-time'),
     currentShot: $('current-shot-name'), currentScene: $('current-shot-scene'),
     cuts: $('cuts-count'), fallbacks: $('fallbacks-count'), sessionStatus: $('session-status'),
+    directorMode: $('director-mode-badge'), directorAction: $('director-action'), directorRationale: $('director-rationale'),
+    situationShot: $('situation-shot'), situationHealth: $('situation-health'), situationSpeaker: $('situation-speaker'),
     cameraGrid: $('camera-grid'), sourceCount: $('source-count'), faultCamera: $('fault-camera'),
     crewState: $('crew-state'), crewSummary: $('flower-summary'), agentList: $('agent-list'),
     gridRun: $('grid-run'), gridRunLabel: $('grid-run-label'), gridRunId: $('grid-run-id'), gridRunStatus: $('grid-run-status'),
@@ -85,6 +87,7 @@
     toastTimer = window.setTimeout(() => item.remove(), 5200);
   }
   function setConnection(kind, label) {
+    if (!refs.connection || !refs.connectionLabel) return;
     refs.connection.dataset.state = kind;
     refs.connectionLabel.textContent = label;
   }
@@ -155,7 +158,21 @@
     if (!refs.pause.hasAttribute('aria-busy')) refs.pause.disabled = !active;
     if (!refs.stop.hasAttribute('aria-busy')) refs.stop.disabled = !active && !stopPending;
     if (!refs.resume.hasAttribute('aria-busy')) refs.resume.disabled = !manuallyLatched || status !== 'running';
+    if (!refs.start.hasAttribute('aria-busy')) {
+      const amiDemo = refs.inputMode.value === 'ami';
+      refs.start.innerHTML = `<span class="button-icon" aria-hidden="true">▶</span> ${amiDemo ? 'Start 2-minute demo' : 'Start test session'}`;
+    }
     refs.pause.innerHTML = status === 'paused' ? '<span class="button-icon" aria-hidden="true">▶</span> Resume' : '<span class="button-icon" aria-hidden="true">Ⅱ</span> Pause';
+    if (refs.controlStatus) {
+      refs.controlStatus.dataset.state = manuallyLatched && status === 'running' ? 'manual' : (status || 'idle');
+      if (manuallyLatched && status === 'running') refs.controlStatus.textContent = 'Manual camera control is active. Use Autopilot to return control to the AI director.';
+      else if (status === 'running') refs.controlStatus.textContent = 'Session is live. Camera switching and source health are active.';
+      else if (status === 'paused') refs.controlStatus.textContent = 'Session is paused. Resume when you are ready.';
+      else if (stopPending) refs.controlStatus.textContent = 'Finalizing the current recording…';
+      else refs.controlStatus.textContent = refs.inputMode.value === 'ami'
+        ? 'Ready for the prepared 2-minute AMI demo.'
+        : 'Ready for a generated test session.';
+    }
     renderAudioControls(latestState || {});
   }
   function renderMode(state) {
@@ -191,12 +208,9 @@
     refs.sessionStatus.textContent = status[0] ? status[0].toUpperCase() + status.slice(1) : 'Unknown';
     refs.outputChip.textContent = outputMode === 'obs' ? 'OBS DESTINATION' : 'PREVIEW OUTPUT';
     refs.previewWatermark.textContent = outputMode === 'obs' ? 'LOCAL PROGRAM MONITOR' : 'LOCAL PREVIEW';
-    refs.sceneKicker.textContent = outputMode === 'obs' ? 'OBS PROGRAM SIGNAL' : 'PREVIEW PROGRAM';
     const camera = actualCameras().find((item) => item.id === program.camera_id);
     const meta = camera ? cameraMeta(camera) : null;
     const cameraName = meta ? meta.name : (program.camera_id === 'slate' ? 'Unavailable slate' : 'Awaiting program source');
-    refs.programCamera.textContent = cameraName;
-    refs.programReason.textContent = program.reason || (program.scene ? `Scene · ${program.scene}` : 'The controller’s selected camera will appear here.');
     refs.currentShot.textContent = cameraName;
     refs.currentScene.textContent = program.scene || '—';
     refs.cuts.textContent = state.metrics && finite(state.metrics.cuts) ? String(state.metrics.cuts) : '—';
@@ -205,12 +219,61 @@
     if (session.input_mode && !inputChoiceTouched) refs.inputMode.value = session.input_mode;
     if (session.output_mode && !outputChoiceTouched) refs.outputMode.value = session.output_mode;
     const b = state.broadcast || {};
-    refs.broadcastStatus.textContent = `${Number(b.delay_s ?? refs.broadcastDelay.value)}s delay · ${b.phase || 'standby'}`;
+    const delay = Number(b.delay_s ?? refs.broadcastDelay.value) || 0;
+    if (status === 'idle' || status === 'stopped') refs.broadcastStatus.textContent = 'Ready to start';
+    else if (status === 'buffering' || b.ready === false) refs.broadcastStatus.textContent = `Filling ${delay}s buffer`;
+    else if (paused) refs.broadcastStatus.textContent = 'Output paused';
+    else if (outputMode === 'obs') refs.broadcastStatus.textContent = state.obs && state.obs.recording ? `OBS on air · ${delay}s delay` : 'OBS output selected';
+    else refs.broadcastStatus.textContent = delay ? `Preview · ${delay}s delay` : 'Preview · live';
     refs.broadcastMetrics.textContent = `Input ${fmtTime(state.session && state.session.time_s)} · On air ${fmtTime(b.time_s)} · ${Number(b.captured_fps || 0).toFixed(1)} captured fps · ${b.pending_cuts || 0} queued cuts · ${state.metrics && state.metrics.ai_deadline_misses || 0} missed deadlines`;
     const p = state.perception || {};
     const ps = p.status || {};
     refs.perceptionStatus.textContent = `Speech: ${ps.speech && ps.speech.state || 'unavailable'} · Visual: ${ps.visual && ps.visual.state || 'unavailable'}`;
     refs.transcriptPreview.textContent = p.transcript && p.transcript.text || 'No recent speech observations.';
+  }
+
+  function cameraDisplayName(cameraId) {
+    const camera = actualCameras().find((item) => item.id === cameraId);
+    if (camera) return cameraMeta(camera).name;
+    if (cameraId === 'slate') return 'Standby slate';
+    const known = CAMERA_FALLBACKS.find((item) => item.id === cameraId);
+    return known ? known.name : cameraId || 'No source';
+  }
+
+  function renderDirector(state) {
+    const session = playbackSession(state);
+    const program = state.program || {};
+    const camera = actualCameras().find((item) => item.id === program.camera_id);
+    const cameraName = cameraDisplayName(program.camera_id);
+    const status = session.status || 'idle';
+    const decisionSource = String(program.decision_source || '').toLowerCase();
+    let badge = 'STANDBY';
+    let action = 'Waiting for a session';
+    let rationale = 'Start a session to see camera decisions and their reasons.';
+    let tone = 'standby';
+
+    if (status === 'paused') {
+      badge = 'PAUSED'; action = `Holding on ${cameraName}`; rationale = 'The session is paused, so the current shot is being held.'; tone = 'paused';
+    } else if (status === 'buffering') {
+      badge = 'BUFFERING'; action = 'Preparing the program output'; rationale = 'The broadcast delay is filling before the selected shot goes on air.'; tone = 'buffering';
+    } else if (status === 'running') {
+      action = program.camera_id === 'slate' ? 'Showing the standby slate' : `Showing ${cameraName}`;
+      rationale = program.reason || 'The director selected the best available view.';
+      if (state.mode === 'manual' || decisionSource === 'manual') { badge = 'MANUAL'; tone = 'manual'; }
+      else if (decisionSource === 'health' || program.camera_id === 'slate') { badge = 'SAFETY'; tone = 'safety'; }
+      else { badge = 'AI DIRECTOR'; tone = 'autopilot'; }
+    }
+
+    refs.directorMode.textContent = badge;
+    refs.directorMode.dataset.tone = tone;
+    refs.directorAction.textContent = action;
+    refs.directorRationale.textContent = rationale;
+    refs.situationShot.textContent = cameraName;
+    if (!camera) refs.situationHealth.textContent = program.camera_id === 'slate' ? 'Standby' : 'Waiting';
+    else refs.situationHealth.textContent = camera.healthy === true ? 'Healthy' : camera.healthy === false ? 'Unavailable' : 'Checking';
+    if (!camera) refs.situationSpeaker.textContent = 'Not detected';
+    else if (camera.speaking === true) refs.situationSpeaker.textContent = `${cameraMeta(camera).participant} speaking`;
+    else refs.situationSpeaker.textContent = 'No active speech';
   }
   function renderCameras(state) {
     const cameras = Array.isArray(state.cameras) ? state.cameras : [];
@@ -416,16 +479,35 @@
       return `<div class="ai-role-row" data-state="${accepted ? 'verified' : failed ? 'error' : 'pending'}"><span class="ai-role-mark" aria-hidden="true">${accepted ? '✓' : failed ? '!' : '·'}</span><span class="ai-role-copy"><span class="ai-role-head"><strong>${role.title}</strong><span class="ai-role-state">${status}</span></span>${detailsLine}${responseHtml}</span></div>`;
     }).join('');
   }
+  function directorEventView(event) {
+    const kind = String(event.kind || '').toLowerCase();
+    const target = cameraDisplayName(event.camera_id);
+    const source = String(event.source || '').toLowerCase();
+    const base = { detail: event.message || 'The controller updated the program state.', tone: 'normal', actor: 'DIRECTOR' };
+    if (kind === 'camera_cut') return { ...base, title: `Cut to ${target}`, actor: source === 'ai_director' ? 'AI DIRECTOR' : source === 'health' ? 'SAFETY' : 'DIRECTOR' };
+    if (kind === 'fallback_cut') return { ...base, title: `Protected the output with ${target}`, actor: 'SAFETY', tone: 'safety' };
+    if (kind === 'manual_override') return { ...base, title: `Operator selected ${target}`, actor: 'MANUAL', tone: 'manual' };
+    if (kind === 'autopilot_resumed') return { ...base, title: 'Returned control to the AI director', actor: 'AUTOPILOT' };
+    if (kind === 'manual_source_unavailable') return { ...base, title: `${target} is unavailable`, actor: 'ATTENTION', tone: 'alert' };
+    if (kind === 'session_started') return { ...base, title: 'Session started', actor: 'SESSION' };
+    if (kind === 'session_paused') return { ...base, title: 'Session paused', actor: 'SESSION', tone: 'paused' };
+    if (kind === 'session_resumed') return { ...base, title: 'Session resumed', actor: 'SESSION' };
+    if (kind === 'session_stopped' || kind === 'session_ended') return { ...base, title: 'Session ended', actor: 'SESSION' };
+    if (kind === 'fault_injected') return { ...base, title: `Test fault applied to ${target}`, actor: 'TEST', tone: 'alert' };
+    if (kind === 'obs_disconnected' || kind === 'obs_recording_stopped_externally') return { ...base, title: 'OBS output needs attention', actor: 'OUTPUT', tone: 'alert' };
+    if (kind === 'controller_error' || kind === 'media_error') return { ...base, title: 'Controller needs attention', actor: 'SYSTEM', tone: 'alert' };
+    return null;
+  }
+
   function renderTrace(state) {
-    const events = Array.isArray(state.events) ? state.events.filter((event) => event.kind !== 'agent_heartbeat' && event.kind !== 'camera_observation').slice(0, 8) : [];
-    refs.traceCount.textContent = events.length ? `${events.length} EVENTS` : '—';
-    refs.traceList.innerHTML = events.length ? events.map((event) => {
-      const kind = String(event.kind || 'event');
-      const source = event.source || 'controller';
+    const events = Array.isArray(state.events)
+      ? state.events.map((event) => ({ event, view: directorEventView(event) })).filter((item) => item.view).slice(0, 6)
+      : [];
+    refs.traceCount.textContent = events.length ? String(events.length) : '—';
+    refs.traceList.innerHTML = events.length ? events.map(({ event, view }) => {
       const time = fmtTime(event.time_s);
-      const camera = event.camera_id ? ` · ${event.camera_id}` : '';
-      return `<li data-kind="${escapeHtml(kind.toLowerCase())}"><div class="trace-meta"><span class="trace-source">${escapeHtml(source)} · ${escapeHtml(kind)}${escapeHtml(camera)}</span><time>${time}</time></div><div class="trace-message">${escapeHtml(event.message || 'Event reported without a description.')}</div></li>`;
-    }).join('') : '<li class="empty-trace">No controller or agent events reported yet.</li>';
+      return `<li data-tone="${escapeHtml(view.tone)}"><span class="decision-rail" aria-hidden="true"></span><div class="decision-copy"><div class="decision-title"><strong>${escapeHtml(view.title)}</strong><time>${time}</time></div><span class="decision-actor">${escapeHtml(view.actor)}</span><p>${escapeHtml(view.detail)}</p></div></li>`;
+    }).join('') : '<li class="empty-trace">No director actions yet. Start a session to see each camera decision and its reason.</li>';
   }
   function renderObs(state) {
     const obs = state.obs || {};
@@ -449,7 +531,7 @@
     latestState = state;
     lastStateAt = Date.now();
     setConnection('connected', 'Controller online');
-    renderMode(state); renderSession(state); renderCameras(state); renderFlower(state); renderTrace(state); renderObs(state); renderControls();
+    renderMode(state); renderSession(state); renderCameras(state); renderDirector(state); renderFlower(state); renderTrace(state); renderObs(state); renderControls();
     syncPreviewAudio(state);
       if (state.data && Array.isArray(state.data.missing_files) && state.data.missing_files.length && !(state.obs && state.obs.output_path)) {
         refs.opsFootnote.textContent = 'AMI dataset is not installed yet. Generated test feeds are ready; see README for the verified download workflow.';
@@ -695,8 +777,8 @@
       if (latestState) renderModelProfile(latestState);
     }
   });
-  refs.inputMode.addEventListener('change', () => { inputChoiceTouched = true; renderAudioControls(latestState || {}); });
-  refs.outputMode.addEventListener('change', () => { outputChoiceTouched = true; });
+  refs.inputMode.addEventListener('change', () => { inputChoiceTouched = true; renderControls(); });
+  refs.outputMode.addEventListener('change', () => { outputChoiceTouched = true; renderControls(); });
   $('pause-session').addEventListener('click', () => {
     const paused = latestState && latestState.session && latestState.session.status === 'paused';
     void guardedAction(paused ? '/api/session/resume' : '/api/session/pause', {}, refs.pause, paused ? 'Session resume requested.' : 'Session pause requested.');
@@ -759,7 +841,7 @@
     if (typeof refs.creditsDialog.showModal === 'function') refs.creditsDialog.showModal();
     else refs.creditsDialog.setAttribute('open', '');
   }
-  $('credits-open').addEventListener('click', openCredits);
+  $('credits-open')?.addEventListener('click', openCredits);
   $('credits-open-footer').addEventListener('click', openCredits);
 
   refs.audio.volume = Number(refs.audioVolume.value);
@@ -770,10 +852,15 @@
   const themeBtn = $('theme-toggle');
   const themeIcon = $('theme-toggle-icon');
   if (themeBtn && themeIcon) {
+    const moonIcon = '<svg viewBox="0 0 24 24" fill="none"><path d="M20.2 15.3A8.5 8.5 0 0 1 8.7 3.8 8.5 8.5 0 1 0 20.2 15.3Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    const sunIcon = '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3.5" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.5V5m0 14v2.5M2.5 12H5m14 0h2.5M5.3 5.3 7 7m10 10 1.7 1.7M18.7 5.3 17 7M7 17l-1.7 1.7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
     function applyTheme(t) {
       document.documentElement.dataset.theme = t;
-      themeIcon.textContent = t === 'night' ? '☽' : '☀';
-      document.querySelector('meta[name="theme-color"]').content = t === 'night' ? '#09090b' : '#f5f0e8';
+      const nextTheme = t === 'night' ? 'day' : 'night';
+      themeIcon.innerHTML = t === 'night' ? sunIcon : moonIcon;
+      themeBtn.title = `Switch to ${nextTheme} mode`;
+      themeBtn.setAttribute('aria-label', `Switch to ${nextTheme} mode`);
+      document.querySelector('meta[name="theme-color"]').content = t === 'night' ? '#11171e' : '#f3f5f7';
       try { localStorage.setItem('noesis-theme', t); } catch(e) {}
     }
     applyTheme(document.documentElement.dataset.theme || 'day');
