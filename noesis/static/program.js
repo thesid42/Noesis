@@ -19,7 +19,6 @@
   let audioUnavailable = false;
   let audioSessionId = null;
   let audioEpoch = null;
-  let lastImageUrl = null;
 
   function fmtTime(seconds) {
     if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return '00:00';
@@ -130,16 +129,10 @@
     if (frameInFlight || !session || Date.now() - lastStateAt > 3500 || !['running', 'paused'].includes(session.status)) return;
     frameInFlight = true;
     try {
-      const response = await fetch(`/api/program.jpg?_=${Date.now()}`, { signal: AbortSignal.timeout(2000), cache: 'no-store', headers: { Accept: 'image/jpeg' } });
-      if (!response.ok) return;
-      const blob = await response.blob();
-      if (!blob.size) return;
-      const url = URL.createObjectURL(blob);
-      const old = lastImageUrl;
-      lastImageUrl = url;
       refs.image.onload = () => { refs.image.classList.add('is-visible'); refs.output.classList.add('has-frame'); };
-      refs.image.src = url;
-      if (old) URL.revokeObjectURL(old);
+      // Use a direct same-origin JPEG URL. This avoids Blob/object-URL
+      // decoding issues in OBS's embedded Chromium browser source.
+      refs.image.src = `/api/program.jpg?_=${Date.now()}`;
     } catch { /* Keep the last delivered program frame visible during a transient read error. */ }
     finally { frameInFlight = false; }
   }

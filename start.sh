@@ -37,6 +37,22 @@ if [[ "$PREVIEW_ONLY" == true ]]; then
   exec "$PYTHON" -m noesis
 fi
 
+if [[ "$OBS" == true && "$OSTYPE" == darwin* ]]; then
+  if ! (command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 4455 >/dev/null 2>&1); then
+    cat >&2 <<'EOF'
+OBS integration on macOS requires the native OBS app to be running with obs-websocket enabled on port 4455.
+
+1. Open OBS Studio.
+2. Enable Tools > WebSocket Server Settings, using port 4455.
+3. Put the same password in .env as OBS_PASSWORD=....
+4. Run ./start.sh --OBS again.
+
+The repository's scripts/setup_obs.py downloads Windows portable OBS and cannot be used on macOS.
+EOF
+    exit 1
+  fi
+fi
+
 ARGS=(scripts/run_demo.py)
 if [[ "$OBS" == true ]]; then
   ARGS+=(--obs)
