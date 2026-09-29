@@ -322,9 +322,9 @@
     refs.modelProfile.setAttribute('aria-busy', String(profileBusy));
     const flower = state.flower || {};
     const verification = flower.model_status === 'verified' ? 'VERIFIED' : flower.model_status === 'configured_not_verified' ? 'NOT VERIFIED' : 'NOT REPORTED';
-    refs.modelProfileStatus.textContent = profileBusy ? 'Switching profile…' : `${verification} · fresh AI response required after a switch`;
-    refs.modelVerificationStatus.textContent = verification;
-    refs.modelVerificationStatus.dataset.state = flower.model_status === 'verified' ? 'verified' : 'pending';
+    refs.modelProfileStatus.textContent = profileBusy ? 'Switching profile…' : '';
+    refs.modelVerificationStatus.textContent = '';
+    refs.modelVerificationStatus.dataset.state = '';
   }
 
   function roleRecordKey(record) {
