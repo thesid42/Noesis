@@ -73,6 +73,30 @@ def test_profile_endpoint_and_allowlist_fail_closed() -> None:
         assert calls[-1].url == ENDPOINT
 
 
+def test_flower_camera_routing_keeps_provider_keys_and_payloads_separate() -> None:
+    env = {**_env(), "NOESIS_CAMERA_MODEL": "qwen/qwen3.5-9b",
+           "FLWR_MODEL_API_KEY": "flower-private-key"}
+    targets = load_provider_targets(env)
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"id": "response-camera", "status": "completed"})
+    with TestClient(create_app(targets, "internal", transport=httpx.MockTransport(handler))) as client:
+        payload = {"model": "qwen/qwen3.5-9b", "input": "Measured camera evidence",
+                   "reasoning": {"effort": "none"}}
+        assert client.post("/v1/responses", headers={"Authorization": "Bearer internal"}, json=payload).status_code == 200
+        assert str(calls[-1].url) == gateway.FLOWER_MODEL_ENDPOINT
+        assert calls[-1].headers["authorization"] == "Bearer flower-private-key"
+        assert json.loads(calls[-1].content) == payload
+        client.post("/v1/responses", headers={"Authorization": "Bearer internal"}, json={"model": "kimi-model"})
+        assert str(calls[-1].url) == ENDPOINT
+        assert calls[-1].headers["authorization"] == "Bearer kimi-private-key"
+    assert "qwen" not in model_catalog_json(targets)  # Camera assignment is not a director profile.
+    assert "flower-private-key" not in repr(targets)
+    with pytest.raises(ValueError, match="Flower camera"):
+        load_provider_targets({**env, "FLWR_MODEL_API_ENDPOINT": ENDPOINT})
+
+
 def test_successful_provider_timing_is_correlatable_and_contains_no_prompt_or_secret() -> None:
     events: list[dict] = []
     response_body = {"id": "resp-timing-1", "status": "completed", "output_text": "private prompt answer"}

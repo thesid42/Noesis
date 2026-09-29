@@ -25,7 +25,7 @@ API_URL = "http://127.0.0.1:8000"
 
 
 def environments(source: dict[str, str], profile_name: str, inference_transport: str = "gateway") -> tuple[dict, dict, dict]:
-    """Only the loopback gateway receives Nebius provider keys."""
+    """Only the loopback gateway receives provider keys."""
     if inference_transport not in {"flower", "gateway"}:
         raise ValueError("Inference transport must be flower or gateway.")
     targets = load_provider_targets(source)
@@ -49,7 +49,8 @@ def environments(source: dict[str, str], profile_name: str, inference_transport:
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
     token = ensure_gateway_token(RUNTIME / "gateway-token", {})
     gateway = {**env, "NOESIS_GATEWAY_TOKEN": token}
-    gateway.update({key: value for key, value in source.items() if key.startswith(("NEBIUS_KIMI_", "NEBIUS_MINIMAX_"))})
+    gateway.update({key: value for key, value in source.items() if key.startswith(("NEBIUS_KIMI_", "NEBIUS_MINIMAX_"))
+                    or key in {"FLWR_MODEL_API_KEY", "FLWR_MODEL_API_ENDPOINT"}})
     superlink = {**env, "FLWR_MODEL_API_ENDPOINT": "http://127.0.0.1:8770/v1/responses", "FLWR_MODEL_API_KEY": token}
     if inference_transport == "gateway":
         superlink["NOESIS_AGENT_GATEWAY_TOKEN"] = token
@@ -143,6 +144,8 @@ def serve(args) -> None:
         metadata.update(run_id=run_id, status="pending", checked_at=time.time())
         write(RUN_FILE, metadata)
         print(f"Local Flower run {run_id}: six AI roles, Nebius {args.model_profile} inference.", flush=True)
+        if source.get("NOESIS_CAMERA_MODEL"):
+            print(f"Camera override: {source['NOESIS_CAMERA_MODEL']} via Flower; reasoning {source.get('NOESIS_CAMERA_REASONING_EFFORT', 'low')}.", flush=True)
         print(f"Inference transport: {inference_transport}.", flush=True)
         print("Noesis: http://127.0.0.1:8765 - Ctrl+C stops owned services.", flush=True)
         deadline = time.monotonic() + args.agent_budget_s + 60

@@ -44,6 +44,8 @@ SAMPLE_PERIOD_S = 0.10
 BLACK_THRESHOLD = 7.5
 BLACK_DEBOUNCE_S = 0.8
 SOURCE_STALL_DEBOUNCE_S = 0.8
+MAX_OUTPUT_DELAY_S = 60.0
+MAX_BROADCAST_BYTES = 128 * 1024 * 1024
 
 
 def _safe_read_json(path: Path) -> dict[str, Any] | None:
@@ -227,7 +229,7 @@ def _synthetic_jpeg(camera: dict[str, Any], time_s: float, speakers: list[str]) 
 class MediaEngine:
     """Thread-safe synthetic/AMI replay, frame cache, audio VAD, and fault injection."""
 
-    def __init__(self, data_dir: Path | None = None):
+    def __init__(self, data_dir: Path | None = None, output_delay_s: float = 0.0):
         self.data_dir = Path(data_dir) if data_dir is not None else DEFAULT_DATA_DIR
         if self.data_dir.name != "ES2002a" and (self.data_dir / "ES2002a").is_dir():
             self.data_dir = self.data_dir / "ES2002a"
@@ -254,6 +256,34 @@ class MediaEngine:
         self._channel_files: dict[str, Path] = {}
         self._using_prepared = False
         self._prepared_manifest: dict[str, Any] | None = None
+        requested_delay = float(output_delay_s)
+        if not math.isfinite(requested_delay) or requested_delay > MAX_OUTPUT_DELAY_S:
+            raise ValueError(f"output_delay_s must be finite and at most {MAX_OUTPUT_DELAY_S:g}")
+        self._output_delay_s = max(0.0, requested_delay)
+        self._capture_fps = 30.0
+        self._output_enabled = self._output_delay_s > 0.0
+        self._capture_lock = threading.RLock()
+        self._broadcast_lock = threading.RLock()
+        self._broadcast_frames: dict[str, deque[tuple[float, bytes, float | None, dict[str, Any]]]] = {
+            camera_id: deque() for camera_id in CAMERA_IDS
+        }
+        self._broadcast_bytes = 0
+        self._buffer_epoch = 0
+        self._buffer_start_time = 0.0
+        self._buffer_history_s = max(10.0, self._output_delay_s + 5.0)
+        self._buffer_arrivals: deque[tuple[float, str]] = deque()
+        self._worker_stop = threading.Event()
+        self._worker_thread: threading.Thread | None = None
+        self._worker_processing_ms = 0.0
+        self._worker_last_error: str | None = None
+        self._last_analysis_mono: float | None = None
+        self._broadcast_slates: dict[tuple[str, str], bytes] = {}
+        self._capture_decoded: dict[str, tuple[Any, float, float] | None] = {}
+        self._worker_analysis_time: float | None = None
+        self._drain_output_base: float | None = None
+        self._drain_anchor_mono: float | None = None
+        self._drain_wait_remaining_s = 0.0
+        self._drain_wait_anchor_mono: float | None = None
         self._init_camera_info()
 
     @staticmethod
@@ -368,20 +398,225 @@ class MediaEngine:
         return max(0.1, min(durations)) if durations else 150.0
 
     def _close_sources(self) -> None:
-        for capture in self._captures.values():
-            try:
-                capture.release()
-            except Exception:
-                pass
-        self._captures.clear()
-        for handle in self._audio_handles.values():
-            try:
-                handle.close()
-            except Exception:
-                pass
-        self._audio_handles.clear()
-        self._source_state.clear()
-        self._audio_state.clear()
+        with self._capture_lock:
+            for capture in self._captures.values():
+                try:
+                    capture.release()
+                except Exception:
+                    pass
+            self._captures.clear()
+            for handle in self._audio_handles.values():
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+            self._audio_handles.clear()
+            self._source_state.clear()
+            self._audio_state.clear()
+
+    def configure_output(self, delay_s: float, fps: float = 30.0) -> dict[str, Any]:
+        """Enable timestamped broadcast buffering while playback is stopped."""
+        requested_delay = float(delay_s)
+        if not math.isfinite(requested_delay) or requested_delay > MAX_OUTPUT_DELAY_S:
+            raise ValueError(f"delay_s must be finite and at most {MAX_OUTPUT_DELAY_S:g}")
+        delay = max(0.0, requested_delay)
+        requested_fps = float(fps)
+        if not math.isfinite(requested_fps) or requested_fps <= 0 or requested_fps > 60:
+            raise ValueError("fps must be greater than 0 and at most 60")
+        with self._lock:
+            if self._status not in {"idle", "stopped"}:
+                raise RuntimeError("output can only be configured while stopped")
+            self._output_delay_s = delay
+            self._capture_fps = requested_fps
+            self._output_enabled = True
+            self._buffer_history_s = max(10.0, delay + 5.0)
+            self._reset_broadcast_buffer_locked(0.0)
+            return self.broadcast_snapshot()
+
+    def _reset_broadcast_buffer_locked(self, start_s: float) -> None:
+        with self._capture_lock:
+            with self._broadcast_lock:
+                for frames in self._broadcast_frames.values():
+                    frames.clear()
+                self._broadcast_bytes = 0
+                self._buffer_arrivals.clear()
+                self._buffer_epoch += 1
+                self._buffer_start_time = max(0.0, float(start_s))
+                self._capture_decoded.clear()
+                self._worker_analysis_time = None
+                self._worker_last_error = None
+                self._last_analysis_mono = None
+                self._drain_output_base = None
+                self._drain_anchor_mono = None
+                self._drain_wait_remaining_s = 0.0
+                self._drain_wait_anchor_mono = None
+
+    def _ensure_worker_started_locked(self) -> None:
+        if not self._output_enabled or self._worker_thread is not None:
+            return
+        self._worker_stop.clear()
+        self._worker_thread = threading.Thread(
+            target=self._capture_worker, name="noesis-media-capture", daemon=True,
+        )
+        self._worker_thread.start()
+
+    def close(self) -> None:
+        """Stop the background sampler and release media handles."""
+        self._worker_stop.set()
+        worker = self._worker_thread
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout=3.0)
+        self._worker_thread = None
+        with self._lock:
+            self._close_sources()
+
+    def _capture_worker(self) -> None:
+        next_tick = time.monotonic()
+        while not self._worker_stop.is_set():
+            with self._lock:
+                status = self._status
+                session_time = self._clock_locked()
+                should_capture = status == "running" and session_time < self._duration_s
+                period = 1.0 / max(1.0, self._capture_fps)
+                capture_epoch = self._buffer_epoch
+            now = time.monotonic()
+            if should_capture:
+                started = now
+                try:
+                    with self._capture_lock:
+                        if capture_epoch == self._buffer_epoch:
+                            self._capture_tick_locked(session_time)
+                    self._worker_last_error = None
+                except Exception as exc:  # keep capture alive; expose failures in metrics
+                    self._worker_last_error = f"{type(exc).__name__}: {exc}"
+                self._worker_processing_ms = max(0.0, (time.monotonic() - started) * 1000.0)
+            next_tick += period
+            wait_s = max(0.0, next_tick - time.monotonic())
+            if wait_s <= 0:
+                # Drop missed sampling slots rather than building an unbounded
+                # catch-up queue or duplicating the same source frame.
+                next_tick = time.monotonic()
+                wait_s = min(period, 0.001)
+            self._worker_stop.wait(min(wait_s, 0.05))
+
+    def _capture_tick_locked(self, time_s: float) -> None:
+        self._fault_now_locked()
+        if self._input_mode == "synthetic":
+            analysis_due = (self._worker_analysis_time is None
+                            or time_s - self._worker_analysis_time >= SAMPLE_PERIOD_S * 0.9)
+            if analysis_due:
+                self._observation_revision += 1
+            self._sample_synthetic_locked(time_s, update_health=analysis_due)
+            if analysis_due:
+                self._worker_analysis_time = time_s
+                self._last_analysis_mono = time.monotonic()
+            with self._broadcast_lock:
+                for camera_id in CAMERA_IDS:
+                    record = dict(self._camera_info[camera_id].get("_last", {}))
+                    self._append_broadcast_frame_locked(
+                        camera_id, time_s, self._frame_cache.get(camera_id, b""),
+                        record.get("source_time_s"), record,
+                    )
+            return
+
+        captured = self._capture_ami_frames_locked(time_s)
+        analysis_due = (self._worker_analysis_time is None
+                        or time_s - self._worker_analysis_time >= SAMPLE_PERIOD_S * 0.9)
+        if analysis_due:
+            self._observation_revision += 1
+            self._sample_ami_locked(time_s, decoded_overrides=self._capture_decoded)
+            self._worker_analysis_time = time_s
+            self._last_analysis_mono = time.monotonic()
+        with self._broadcast_lock:
+            for camera_id, item in captured.items():
+                jpeg, frame_time_s, source_time_s = item
+                record = dict(self._camera_info[camera_id].get("_last", {}))
+                self._append_broadcast_frame_locked(
+                    camera_id, frame_time_s, jpeg, source_time_s, record,
+                    count_as_capture=not (
+                        (self._faults.get(camera_id) or {}).get("kind") in {"offline", "freeze"}
+                    ),
+                )
+
+    def _append_broadcast_frame_locked(
+        self, camera_id: str, frame_time_s: float, jpeg: bytes,
+        source_time_s: float | None, health: dict[str, Any], *, count_as_capture: bool = True,
+    ) -> None:
+        if not jpeg:
+            return
+        frames = self._broadcast_frames[camera_id]
+        pts = max(0.0, float(frame_time_s))
+        if frames and pts <= frames[-1][0] + 1e-6:
+            return
+        frozen_health = {
+            key: health.get(key) for key in
+            ("healthy", "status", "quality", "age_ms", "speaking", "speaker_state")
+        }
+        frozen_health["source_time_s"] = source_time_s
+        frames.append((pts, bytes(jpeg), source_time_s, frozen_health))
+        self._broadcast_bytes += len(jpeg)
+        if count_as_capture:
+            self._buffer_arrivals.append((time.monotonic(), camera_id))
+        cutoff = pts - self._buffer_history_s
+        while frames and frames[0][0] < cutoff:
+            removed = frames.popleft()
+            self._broadcast_bytes -= len(removed[1])
+        while self._buffer_arrivals and self._buffer_arrivals[0][0] < time.monotonic() - 2.0:
+            self._buffer_arrivals.popleft()
+        # A hard entry cap protects against malformed timestamps or sources.
+        max_entries = max(60, int(self._buffer_history_s * self._capture_fps) + 10)
+        while len(frames) > max_entries:
+            removed = frames.popleft()
+            self._broadcast_bytes -= len(removed[1])
+        while self._broadcast_bytes > MAX_BROADCAST_BYTES:
+            oldest_camera = min(
+                (camera_id for camera_id, buffered in self._broadcast_frames.items() if buffered),
+                key=lambda camera_id: self._broadcast_frames[camera_id][0][0],
+                default=None,
+            )
+            if oldest_camera is None:
+                self._broadcast_bytes = 0
+                break
+            removed = self._broadcast_frames[oldest_camera].popleft()
+            self._broadcast_bytes -= len(removed[1])
+
+    def _capture_ami_frames_locked(self, time_s: float) -> dict[str, tuple[bytes, float, float | None]]:
+        captured: dict[str, tuple[bytes, float, float | None]] = {}
+        self._capture_decoded = {}
+        for camera_id in CAMERA_IDS:
+            path = self._stream_paths.get(camera_id)
+            camera = self._camera_info[camera_id]
+            fault = self._faults.get(camera_id)
+            if path is None or not path.is_file():
+                self._capture_decoded[camera_id] = None
+                continue
+            if fault and fault["kind"] == "offline":
+                captured[camera_id] = (_offline_card(camera, "SIGNAL LOST"), time_s, None)
+                self._capture_decoded[camera_id] = None
+                continue
+            if fault and fault["kind"] == "freeze":
+                last = camera.get("_last", {})
+                jpeg = last.get("_source_jpeg") or last.get("_jpeg") or fault.get("frozen_jpeg")
+                if jpeg:
+                    captured[camera_id] = (
+                        bytes(jpeg), time_s,
+                        fault.get("frozen_source_time_s", last.get("source_time_s")),
+                    )
+                self._capture_decoded[camera_id] = None
+                continue
+            decoded = self._decode_frame(camera_id, path, time_s)
+            self._capture_decoded[camera_id] = decoded
+            if decoded is None or cv2 is None or np is None:
+                continue
+            frame, source_time_s, _arrival = decoded
+            if fault and fault["kind"] == "black":
+                frame = np.zeros_like(frame)
+            encode_ok, encoded = cv2.imencode(
+                ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY],
+            )
+            if encode_ok:
+                captured[camera_id] = (encoded.tobytes(), source_time_s, source_time_s)
+        return captured
 
     def start(self, input_mode: str = "synthetic", start_s: float = 0.0) -> dict[str, Any]:
         if input_mode not in {"synthetic", "ami"}:
@@ -397,14 +632,30 @@ class MediaEngine:
             self._base_time = min(max(0.0, float(start_s)), self._duration_s)
             self._anchor_mono = time.monotonic()
             self._status = "running" if self._base_time < self._duration_s else "stopped"
+            self._drain_output_base = None
+            self._drain_anchor_mono = None
+            self._reset_broadcast_buffer_locked(self._base_time)
             self._faults.clear()
             self._invalidate_sample()
+            self._ensure_worker_started_locked()
             return self.snapshot()
 
     def pause(self) -> dict[str, Any]:
         with self._lock:
             if self._status == "running":
-                self._base_time = self._clock_locked()
+                session_time = self._clock_locked()
+                if self._drain_output_base is not None:
+                    now = time.monotonic()
+                    current_output_time = self._broadcast_time_locked(session_time)
+                    if (self._drain_wait_remaining_s > 0.0
+                            and self._drain_wait_anchor_mono is not None):
+                        elapsed_wait = max(0.0, now - self._drain_wait_anchor_mono)
+                        self._drain_wait_remaining_s = max(0.0, self._drain_wait_remaining_s - elapsed_wait)
+                        self._drain_wait_anchor_mono = None
+                    if self._drain_anchor_mono is not None:
+                        self._drain_output_base = current_output_time
+                        self._drain_anchor_mono = None
+                self._base_time = session_time
                 self._status = "paused"
                 self._anchor_mono = time.monotonic()
                 self._invalidate_sample()
@@ -416,6 +667,14 @@ class MediaEngine:
                 self._anchor_mono = time.monotonic()
                 self._status = "running"
                 self._invalidate_sample()
+            elif self._status == "paused" and self._base_time >= self._duration_s:
+                now = time.monotonic()
+                self._anchor_mono = now
+                if self._drain_wait_remaining_s > 0.0:
+                    self._drain_wait_anchor_mono = now
+                elif self._drain_output_base is not None:
+                    self._drain_anchor_mono = now
+                self._status = "running"
             return self.snapshot()
 
     def stop(self) -> dict[str, Any]:
@@ -423,6 +682,9 @@ class MediaEngine:
             self._status = "stopped"
             self._base_time = 0.0
             self._anchor_mono = time.monotonic()
+            self._drain_output_base = None
+            self._drain_anchor_mono = None
+            self._reset_broadcast_buffer_locked(0.0)
             self._faults.clear()
             self._invalidate_sample()
             return self.snapshot()
@@ -436,6 +698,11 @@ class MediaEngine:
             self._status = "running" if was_running and requested < self._duration_s else (
                 "stopped" if requested >= self._duration_s else "paused"
             )
+            self._drain_output_base = None
+            self._drain_anchor_mono = None
+            self._reset_broadcast_buffer_locked(requested)
+            if self._status == "running":
+                self._ensure_worker_started_locked()
             self._reset_audio_tracking()
             self._invalidate_sample()
             return self.snapshot()
@@ -451,8 +718,12 @@ class MediaEngine:
             else:
                 frozen_source_time = None
                 if kind == "freeze":
-                    self._ensure_sample_locked(self._clock_locked(), force=True)
-                    frozen = self._frame_cache.get(camera_id)
+                    capture_time_s = self._clock_locked()
+                    if self._output_enabled:
+                        frozen = self.frame_at(camera_id, capture_time_s)
+                    else:
+                        self._ensure_sample_locked(capture_time_s, force=True)
+                        frozen = self._frame_cache.get(camera_id)
                     prior = self._camera_info[camera_id].get("_last", {})
                     frozen_source_time = prior.get("source_time_s")
                 else:
@@ -500,11 +771,196 @@ class MediaEngine:
 
     def _clock_locked(self) -> float:
         if self._status == "running":
-            self._base_time = min(self._duration_s, self._base_time + max(0.0, time.monotonic() - self._anchor_mono))
-            self._anchor_mono = time.monotonic()
+            now = time.monotonic()
+            self._base_time = min(self._duration_s, self._base_time + max(0.0, now - self._anchor_mono))
+            self._anchor_mono = now
             if self._base_time >= self._duration_s:
-                self._status = "stopped"
+                if self._output_enabled:
+                    if self._drain_output_base is None:
+                        elapsed_capture_s = max(0.0, self._duration_s - self._buffer_start_time)
+                        self._drain_output_base = max(self._buffer_start_time,
+                                                      self._duration_s - self._output_delay_s)
+                        self._drain_wait_remaining_s = max(0.0, self._output_delay_s - elapsed_capture_s)
+                        if self._drain_wait_remaining_s > 0.0:
+                            self._drain_anchor_mono = None
+                            self._drain_wait_anchor_mono = now
+                        else:
+                            self._drain_anchor_mono = now
+                            self._drain_wait_anchor_mono = None
+                else:
+                    self._status = "stopped"
         return max(0.0, min(self._duration_s, self._base_time))
+
+    def _broadcast_time_locked(self, session_time_s: float | None = None) -> float:
+        session_time = self._base_time if session_time_s is None else session_time_s
+        if self._drain_output_base is not None:
+            now = time.monotonic()
+            if (self._status == "running" and self._drain_wait_remaining_s > 0.0
+                    and self._drain_wait_anchor_mono is not None):
+                waited_s = max(0.0, now - self._drain_wait_anchor_mono)
+                if waited_s >= self._drain_wait_remaining_s:
+                    scheduled_start = self._drain_wait_anchor_mono + self._drain_wait_remaining_s
+                    self._drain_wait_remaining_s = 0.0
+                    self._drain_wait_anchor_mono = None
+                    self._drain_anchor_mono = scheduled_start
+                else:
+                    return min(self._duration_s, self._drain_output_base)
+            if self._status == "running" and self._drain_anchor_mono is not None:
+                return min(
+                    self._duration_s,
+                    self._drain_output_base + max(0.0, now - self._drain_anchor_mono),
+                )
+            return min(self._duration_s, self._drain_output_base)
+        return min(self._duration_s, max(self._buffer_start_time, session_time - self._output_delay_s))
+
+    def broadcast_snapshot(self) -> dict[str, Any]:
+        """Return the delayed output clock and buffer metrics without sampling media."""
+        with self._lock:
+            session_time_s = self._clock_locked()
+            with self._broadcast_lock:
+                heads = {
+                    camera_id: frames[-1][0] if frames else None
+                    for camera_id, frames in self._broadcast_frames.items()
+                }
+                floors = {
+                    camera_id: frames[0][0] if frames else None
+                    for camera_id, frames in self._broadcast_frames.items()
+                }
+                common_head = min(heads.values()) if all(value is not None for value in heads.values()) else None
+                common_floor = max(floors.values()) if all(value is not None for value in floors.values()) else None
+                # The decoder's first sample can land just after the requested
+                # seek PTS. At EOF, start from the first PTS present in every
+                # camera ring so the delayed tail has a real frame to deliver.
+                if (self._base_time >= self._duration_s and common_floor is not None
+                        and self._drain_output_base is not None):
+                    self._drain_output_base = max(self._drain_output_base, common_floor)
+                output_time_s = self._broadcast_time_locked(session_time_s)
+                has_past_frame = {
+                    camera_id: self._find_broadcast_entry_locked(camera_id, output_time_s) is not None
+                    for camera_id in CAMERA_IDS
+                }
+                buffer_bytes = max(0, self._broadcast_bytes)
+                now = time.monotonic()
+                arrivals = list(self._buffer_arrivals)
+                interval_s = max(0.1, now - arrivals[0][0]) if arrivals else 0.1
+                recent_counts = {camera_id: 0 for camera_id in CAMERA_IDS}
+                for arrival, camera_id in arrivals:
+                    if arrival >= now - 2.0:
+                        recent_counts[camera_id] += 1
+                per_camera_fps = {
+                    camera_id: recent_counts[camera_id] / interval_s for camera_id in CAMERA_IDS
+                }
+                delay_elapsed = session_time_s + 1e-6 >= self._buffer_start_time + self._output_delay_s
+                drain_wait_complete = (
+                    self._drain_output_base is not None and self._drain_wait_remaining_s <= 0.0
+                )
+                # Readiness belongs to the delayed media clock. A failed or
+                # missing camera receives its slate independently and cannot
+                # hold program audio or the other camera feeds in buffering.
+                ready = delay_elapsed or drain_wait_complete
+                if self._base_time >= self._duration_s and output_time_s >= self._duration_s - 1e-6:
+                    if self._status == "running":
+                        self._status = "stopped"
+                        self._drain_output_base = self._duration_s
+                        self._drain_anchor_mono = None
+                    phase = "ended"
+                elif self._status == "stopped":
+                    phase = "ended" if self._base_time >= self._duration_s else "stopped"
+                elif self._status == "paused":
+                    phase = "paused"
+                elif self._base_time >= self._duration_s:
+                    phase = "draining"
+                elif not ready:
+                    phase = "buffering"
+                else:
+                    phase = "playing"
+                if common_head is not None and common_floor is not None:
+                    buffered_seconds = max(0.0, common_head - common_floor)
+                else:
+                    buffered_seconds = 0.0
+                arrival_fps = sum(per_camera_fps.values()) / len(CAMERA_IDS)
+                return {
+                    "time_s": output_time_s,
+                    "session_time_s": session_time_s,
+                    "delay_s": self._output_delay_s,
+                    "phase": phase,
+                    "ready": ready,
+                    "buffer_epoch": self._buffer_epoch,
+                    "capture_head_s": common_head,
+                    "camera_heads_s": heads,
+                    "camera_ready": has_past_frame,
+                    "available_cameras": [camera_id for camera_id, found in has_past_frame.items() if found],
+                    "buffered_seconds": buffered_seconds,
+                    "buffer_bytes": buffer_bytes,
+                    "captured_fps": arrival_fps,
+                    "actual_captured_fps": arrival_fps,
+                    "camera_fps": per_camera_fps,
+                    "target_fps": self._capture_fps,
+                    "processing_ms": self._worker_processing_ms,
+                    "last_error": self._worker_last_error,
+                }
+
+    def _find_broadcast_entry_locked(
+        self, camera_id: str, time_s: float,
+    ) -> tuple[float, bytes, float | None, dict[str, Any]] | None:
+        frames = self._broadcast_frames[camera_id]
+        # The ring is ordered by PTS. A reverse walk finds the closest frame
+        # at or before the requested time and never reads a future frame.
+        for entry in reversed(frames):
+            if entry[0] <= float(time_s) + 1e-9:
+                return entry
+        return None
+
+    def frame_at(self, camera_id: str, time_s: float) -> bytes | None:
+        """Return only an already-buffered frame at or before a requested PTS."""
+        if camera_id not in CAMERA_IDS:
+            raise ValueError(f"unknown camera_id {camera_id!r}")
+        with self._broadcast_lock:
+            entry = self._find_broadcast_entry_locked(camera_id, float(time_s))
+            return bytes(entry[1]) if entry is not None else None
+
+    def buffered_camera(self, camera_id: str, time_s: float) -> dict[str, Any] | None:
+        """Return health captured with the latest buffered frame at/before PTS."""
+        if camera_id not in CAMERA_IDS:
+            raise ValueError(f"unknown camera_id {camera_id!r}")
+        requested = float(time_s)
+        with self._broadcast_lock:
+            entry = self._find_broadcast_entry_locked(camera_id, requested)
+            if entry is None:
+                return None
+            frame_time_s, _jpeg, source_time_s, captured_health = entry
+            health = dict(captured_health)
+            causal_age = (max(0.0, requested - source_time_s) * 1000.0
+                          if source_time_s is not None else None)
+            health["captured_age_ms"] = health.get("age_ms")
+            health["age_ms"] = causal_age
+            return {
+                "frame_time_s": frame_time_s,
+                "source_time_s": source_time_s,
+                "buffer_age_ms": max(0.0, requested - frame_time_s) * 1000.0,
+                "healthy": health.get("healthy"),
+                "status": health.get("status"),
+                "age_ms": causal_age,
+                "health": health,
+            }
+
+    def broadcast_frame(self, camera_id: str) -> bytes:
+        if camera_id not in CAMERA_IDS:
+            raise ValueError(f"unknown camera_id {camera_id!r}")
+        state = self.broadcast_snapshot()
+        if not state["ready"]:
+            return self._broadcast_slate(camera_id)
+        frame = self.frame_at(camera_id, float(state["time_s"]))
+        return frame if frame is not None else self._broadcast_slate(camera_id, "NO FRAME")
+
+    def _broadcast_slate(self, camera_id: str, label: str = "BUFFERING") -> bytes:
+        with self._lock:
+            key = (camera_id, label)
+            frame = self._broadcast_slates.get(key)
+            if frame is None:
+                frame = _offline_card(self._camera_info[camera_id], label)
+                self._broadcast_slates[key] = frame
+            return bytes(frame)
 
     def _invalidate_sample(self) -> None:
         self._last_sample_time = None
@@ -539,6 +995,7 @@ class MediaEngine:
         else:
             self._sample_ami_locked(time_s)
         self._last_sample_time = time_s
+        self._last_analysis_mono = time.monotonic()
 
     def _signal_health_locked(
         self,
@@ -594,7 +1051,7 @@ class MediaEngine:
             return False, "black", min(nominal_quality, 0.05), age_ms
         return True, "online", nominal_quality, age_ms
 
-    def _sample_synthetic_locked(self, time_s: float) -> None:
+    def _sample_synthetic_locked(self, time_s: float, *, update_health: bool = True) -> None:
         speakers, description = _synthetic_schedule(time_s)
         self._active_speakers = speakers
         self._global_speaker_state = "overlap" if len(speakers) > 1 else ("speaker" if speakers else "silence")
@@ -622,11 +1079,18 @@ class MediaEngine:
                 speaking = None
             active = participant in speakers
             energy = 0.42 + 0.08 * math.sin(time_s * 3.0) if active else 0.015
-            healthy, status, quality, age_ms = self._signal_health_locked(
-                camera_id, time_s, jpeg, source_time,
-                arrival_fresh=arrival_fresh,
-                nominal_quality=0.96,
-            )
+            if update_health:
+                healthy, status, quality, age_ms = self._signal_health_locked(
+                    camera_id, time_s, jpeg, source_time,
+                    arrival_fresh=arrival_fresh,
+                    nominal_quality=0.96,
+                )
+            else:
+                prior = self._camera_info[camera_id].get("_last", {})
+                healthy = bool(prior.get("healthy", True))
+                status = str(prior.get("status", "synthetic"))
+                quality = float(prior.get("quality", 0.96))
+                age_ms = float(prior.get("age_ms", 0.0))
             self._frame_cache[camera_id] = jpeg
             self._camera_info[camera_id]["_last"] = {
                 "healthy": healthy,
@@ -907,7 +1371,10 @@ class MediaEngine:
             return _offline_card(self._camera_info[camera_id], "SIGNAL LOST")
         return jpeg
 
-    def _sample_ami_locked(self, time_s: float) -> None:
+    def _sample_ami_locked(
+        self, time_s: float,
+        decoded_overrides: dict[str, tuple[Any, float, float] | None] | None = None,
+    ) -> None:
         if cv2 is None or np is None:
             for camera_id in CAMERA_IDS:
                 jpeg = _offline_card(self._camera_info[camera_id], "OPENCV UNAVAILABLE")
@@ -983,7 +1450,9 @@ class MediaEngine:
                 record.update({"healthy": healthy, "status": status, "quality": quality,
                                "source_time_s": float(source_time), "age_ms": age_ms})
             else:
-                decoded = self._decode_frame(camera_id, path, time_s)
+                decoded = (decoded_overrides or {}).get(camera_id)
+                if decoded_overrides is None:
+                    decoded = self._decode_frame(camera_id, path, time_s)
                 if decoded is None:
                     jpeg = _offline_card(camera, "DECODE ERROR")
                     record["status"] = "decode-error"
@@ -1014,9 +1483,13 @@ class MediaEngine:
                 self._camera_info[camera_id]["_last"]["_jpeg"] = jpeg
                 self._camera_info[camera_id]["_last"]["_source_jpeg"] = jpeg
 
-    def _camera_snapshot_locked(self, camera_id: str) -> dict[str, Any]:
+    def _camera_snapshot_locked(self, camera_id: str, capture_time_s: float | None = None) -> dict[str, Any]:
         camera = self._camera_info[camera_id]
         last = camera.get("_last", {})
+        source_time_s = last.get("source_time_s")
+        age_ms = last.get("age_ms", 0.0)
+        if capture_time_s is not None and source_time_s is not None:
+            age_ms = max(0.0, (capture_time_s - float(source_time_s)) * 1000.0)
         return {
             "id": camera_id,
             "name": camera.get("name", camera_id),
@@ -1027,15 +1500,20 @@ class MediaEngine:
             "speaker_state": str(last.get("speaker_state", "unknown")),
             "energy": last.get("energy"),
             "quality": float(last.get("quality", 0.0)),
-            "age_ms": float(last.get("age_ms", 0.0)),
-            "source_time_s": last.get("source_time_s"),
+            "age_ms": float(age_ms),
+            "source_time_s": source_time_s,
             "frame_url": f"/api/frame/{camera_id}.jpg?rev={self._observation_revision}",
         }
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             time_s = self._clock_locked()
-            self._ensure_sample_locked(time_s)
+            if not self._output_enabled:
+                self._ensure_sample_locked(time_s)
+            observation_age_ms = (
+                max(0.0, (time.monotonic() - self._last_analysis_mono) * 1000.0)
+                if self._last_analysis_mono is not None else None
+            )
             return {
                 "time_s": time_s,
                 "duration_s": self._duration_s,
@@ -1043,14 +1521,18 @@ class MediaEngine:
                 "status": self._status,
                 "speaker_state": self._global_speaker_state,
                 "active_speakers": list(self._active_speakers),
+                "observation_age_ms": observation_age_ms,
                 "prepared_clip": bool(self._using_prepared),
-                "cameras": [self._camera_snapshot_locked(camera_id) for camera_id in CAMERA_IDS],
+                "cameras": [self._camera_snapshot_locked(camera_id, time_s) for camera_id in CAMERA_IDS],
                 "observation_revision": self._observation_revision,
+                "broadcast": self.broadcast_snapshot(),
             }
 
     def frame_jpeg(self, camera_id: str) -> bytes:
         if camera_id not in CAMERA_IDS:
             raise ValueError(f"unknown camera_id {camera_id!r}")
+        if self._output_enabled:
+            return self.broadcast_frame(camera_id)
         with self._lock:
             time_s = self._clock_locked()
             self._ensure_sample_locked(time_s)

@@ -27,6 +27,9 @@ def test_local_launcher_routes_credentials_only_to_gateway(monkeypatch, tmp_path
         "FLWR_RUNTIME_API_KEY": "stale-parent-token", "NOESIS_GATEWAY_TOKEN": "stale-gateway-token",
         "NOESIS_AGENT_GATEWAY_TOKEN": "stale-agent-token", "NOESIS_INFERENCE_TRANSPORT": "invalid",
         "NOESIS_RUNTIME_DEPLOYMENT": "supergrid", "NOESIS_GRID_RUN_FILE": "old-cloud-run.json",
+        "NOESIS_CAMERA_MODEL": "qwen/qwen3.5-9b", "NOESIS_CAMERA_REASONING_EFFORT": "none",
+        "FLWR_MODEL_API_ENDPOINT": "https://api.flower.ai/v1/responses",
+        "FLWR_MODEL_API_KEY": "private-flower-key",
     }
     if inference_transport is None:
         app, gateway, link = local_agents.environments(source, "kimi")
@@ -35,6 +38,10 @@ def test_local_launcher_routes_credentials_only_to_gateway(monkeypatch, tmp_path
         app, gateway, link = local_agents.environments(source, "kimi", inference_transport)
     assert "private-provider-key" not in json.dumps(app)
     assert "private-provider-key" not in json.dumps(link)
+    assert "private-flower-key" not in json.dumps(app)
+    assert "private-flower-key" not in json.dumps(link)
+    assert gateway["FLWR_MODEL_API_KEY"] == "private-flower-key"
+    assert app["NOESIS_CAMERA_MODEL"] == "qwen/qwen3.5-9b"
     assert gateway["NEBIUS_KIMI_API_KEY"] == "private-provider-key"
     assert link["FLWR_MODEL_API_KEY"] == gateway["NOESIS_GATEWAY_TOKEN"]
     assert link["FLWR_MODEL_API_ENDPOINT"] == "http://127.0.0.1:8770/v1/responses"

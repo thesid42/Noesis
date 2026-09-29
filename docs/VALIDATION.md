@@ -2,9 +2,15 @@
 
 Evidence updated 29 September 2026. Generated reports, recordings, keys, and run manifests stay in ignored local paths.
 
-The latest [latency investigation](PERFORMANCE.md) compares 18 real Kimi calls per transport. Median director request time fell from **4.172 s** with Flower model tasks to **0.688 s** with the persistent gateway; director Nebius round-trip medians remained **0.687/0.688 s**. Subsequent decision intervals fell from **15.906–17.828 s** to **6.969–7.000 s**. Both runs completed all three rounds with zero unmatched responses, rejected proposals, or model timeouts. This measures client reuse plus model-task bypass together, while preserving native local Flower orchestration.
+The current local implementation includes independent AI role updates, background speech/frame observations, bounded aired shot history, and a configurable broadcast buffer (five seconds by default). The [latest performance report](PERFORMANCE.md) records a real mixed-model AMI run: four Qwen3.5-9B camera agents through Flower with reasoning disabled, and Kimi critic/director through Nebius. All six roles returned accepted responses; three director decisions produced one aired cut, with no missed broadcast deadlines in that run. Qwen camera latency had a 1.891-second median; Kimi director latency had a 2.469-second median. First aired AI cut was about 10.7 seconds after start, including bootstrap and output delay.
 
-The current regression suite passes **68 tests**, including concurrent client reuse, cancellation, continued use after a timeout, pending-request shutdown, transport/credential guards, state labels, and runtime-specific launcher defaults. Persistent gateway connections are now the default locally; hosted SuperGrid still uses `flower`. Earlier measurements below remain historical observations.
+The 25.166-second OBS recording includes silent buffer fill and delayed continuous AMI audio. Measured audio offset was about 5.35 seconds relative to the source mix. OBS confirmed recording stopped after output drained. Setup now refreshes the existing Noesis browser source to prevent cached player code from retaining the old audio clock, and refuses setup while recording. The recording is `recordings/verified-qwen-delayed-ami.mp4`; this is actual mixed-model output with an AI cut, not a synthetic timing simulation. Fine lip-sync and longer editorial evaluation remain unverified.
+
+The first all-Kimi buffered test missed one deadline; five seconds is not a latency guarantee. The UI offers longer delays. Buffer memory peaked near 12 MiB, and throughput reflects the AMI sources' mixed native frame rates. MiniMax was not run; nothing was published to Flower Hub.
+
+The final regression suite passes **104 tests**. It covers fixed director targets and immutable evidence, per-role model/reasoning routing and verification, credential isolation, stale acquisition timestamps, pause/seek/EOF buffering, missing sources, manual queue invalidation, causal perception, and OBS refresh guards. JavaScript syntax and Git whitespace checks pass. Configured-secret scanning found no matches in public project files.
+
+Earlier checks below are historical observations, not the current model assignment or scheduling architecture.
 
 ## Current local Flower checks
 
@@ -21,7 +27,7 @@ The default launcher now runs six AI roles in one native local Flower AgentApp, 
 | MiniMax | Not run, per user request. Optional UI profile remains supported. |
 | Static checks | Python compilation, JavaScript syntax, Bash syntax, and Git whitespace checks passed. |
 
-These are individual test timings, not a latency guarantee. The earlier successful hosted round took about 23 seconds. Raw video/audio is still processed locally into measured features; the models receive those features rather than raw media or transcripts.
+These are individual test timings, not a latency guarantee. The earlier successful hosted round took about 23 seconds. At the time of that earlier check, models received features only. The current optional perception workers also supply recent transcript text and timestamped frame measurements.
 
 Non-secret live reports are saved locally in `.runtime/local/kimi-acceptance.json` and `.runtime/local/ami-acceptance.json`. To repeat the synthetic acceptance test with the local launcher running, use `scripts/verify_nebius.py --profile kimi --preview-only`; it replaces the current replay and uses model credits.
 
@@ -45,7 +51,7 @@ The separate AMI/OBS check is recorded in `.runtime/ami-acceptance.json`; its re
 
 A final 20.03-second AMI replay ran on the newly running coordinator `3067815238044157620`. Four AI reports arrived around 17–19 seconds, but no AI camera decision arrived before the short clip reached EOF. This confirms a latency limitation independent of coordinator renewal: the current complete directing round can exceed the 20-second excerpt. Use a longer clip for end-to-end AI demos; reduced latency remains an implementation improvement.
 
-## Critic and director flow
+## Historical hosted critic and director flow
 
 The coordinator fans out four camera jobs and one critic job in parallel. The critic receives the current measured round and bounded prior AI report history; it neither waits for nor consumes the four new camera reports. The Director receives the four camera replies, that round's critic response, and a fresh snapshot. In the Kimi proof, all six response IDs were accepted, and the Director selected a healthy camera. The controller remains responsible for current-round provenance, health, manual latch, and execution guards.
 
@@ -69,8 +75,6 @@ The six nodes are online and a real Kimi SuperGrid round is proven. The AgentApp
 
 ## Remaining evaluation
 
-- Capture AI Director cuts in an AMI recording after allowing a round to complete before EOF.
-- Verify the selected camera and continuous audio together in that recording.
 - Rehearse the required 3–5 minute demo with real coordinator/node IDs and accepted response provenance.
 - Measure repeated source-fault latency through the first usable encoded output frame.
 - Evaluate editorial quality on a longer held-out AMI interval and measure fine A/V alignment.

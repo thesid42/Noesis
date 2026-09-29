@@ -61,6 +61,8 @@ class FakeOBSClient:
             })
         elif name == "SetInputSettings":
             pass
+        elif name == "PressInputPropertiesButton":
+            response = {}
         elif name == "CreateSceneItem":
             self.items[data["sceneName"]].append({
                 "sourceName": data["sourceName"],
@@ -146,6 +148,46 @@ async def test_status_poll_reflects_external_stop_and_connection_loss_without_se
     assert observed["recording"] is False
     assert observed["status"] == "disconnected"
     assert "test-secret" not in observed["error"]
+
+
+@pytest.mark.asyncio
+async def test_setup_refreshes_only_existing_noesis_browser_source():
+    client = FakeOBSClient()
+    client.scenes.append({"sceneName": SCENE_NAME})
+    client.items[SCENE_NAME] = [{
+        "sourceName": INPUT_NAME,
+        "sceneItemId": 7,
+        "sceneItemEnabled": True,
+    }]
+    client.inputs.append({"inputName": INPUT_NAME, "inputKind": "browser_source"})
+    client.inputs.append({"inputName": "Unrelated Browser", "inputKind": "browser_source"})
+    bridge = SimpleOBSBridge(client_factory=lambda **kwargs: client)
+
+    await bridge.connect()
+    await bridge.setup_program_scene()
+
+    refreshes = [data for name, data in client.calls if name == "PressInputPropertiesButton"]
+    assert refreshes == [{"inputName": INPUT_NAME, "propertyName": "refreshnocache"}]
+    assert client.inputs == [
+        {"inputName": INPUT_NAME, "inputKind": "browser_source"},
+        {"inputName": "Unrelated Browser", "inputKind": "browser_source"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_setup_refuses_to_refresh_browser_source_while_recording():
+    client = FakeOBSClient()
+    client.recording = True
+    bridge = SimpleOBSBridge(client_factory=lambda **kwargs: client)
+    await bridge.connect()
+    client.calls.clear()
+
+    with pytest.raises(OBSBridgeError, match="while OBS is recording"):
+        await bridge.setup_program_scene()
+
+    assert [name for name, _data in client.calls] == ["GetRecordStatus"]
+    assert not any(name in {"CreateScene", "CreateInput", "SetInputSettings", "PressInputPropertiesButton"}
+                   for name, _data in client.calls)
 
 
 @pytest.mark.asyncio

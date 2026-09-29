@@ -120,6 +120,15 @@ class SimpleOBSBridge:
         async with self._lock:
             self._require_connected()
             try:
+                # Refreshing a browser source can interrupt the active program's
+                # audio/video. Refuse setup before changing anything if OBS is
+                # currently recording, even when our cached status is stale.
+                record_status = await self._request("GetRecordStatus")
+                if record_status.get("outputActive"):
+                    self._recording = True
+                    raise OBSBridgeError("Cannot refresh the Noesis browser source while OBS is recording.")
+                self._recording = False
+
                 scenes = (await self._request("GetSceneList")).get("scenes", [])
                 scene_exists = any(item.get("sceneName") == SCENE_NAME for item in scenes if isinstance(item, dict))
                 if not scene_exists:
@@ -177,6 +186,15 @@ class SimpleOBSBridge:
                         "sceneName": SCENE_NAME,
                         "sceneItemId": program_item["sceneItemId"],
                         "sceneItemEnabled": True,
+                    })
+                if input_exists:
+                    # OBS does not reload an existing browser source just
+                    # because setup is run again with the same URL. This
+                    # built-in browser-source button performs a cache-bypassing
+                    # page refresh and is scoped to our named input only.
+                    await self._request("PressInputPropertiesButton", {
+                        "inputName": INPUT_NAME,
+                        "propertyName": "refreshnocache",
                     })
                 self._program_scene = SCENE_NAME
                 self._status = "ready"

@@ -22,6 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 flower = ["flwr==1.39.0", "openai>=2.16,<3"]
+speech = ["faster-whisper>=1.1,<2"]
 dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2"]
 
 [tool.hatch.build.targets.wheel]

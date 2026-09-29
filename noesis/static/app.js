@@ -13,6 +13,8 @@
     connection: $('connection-indicator'), connectionLabel: $('connection-label'),
     modeCard: $('mode-card'), modeTitle: $('mode-title'), modeDetail: $('mode-detail'),
     inputMode: $('input-mode'), outputMode: $('output-mode'), modelProfile: $('model-profile'),
+    broadcastDelay: $('broadcast-delay'), broadcastStatus: $('broadcast-status'), broadcastMetrics: $('broadcast-metrics'),
+    perceptionStatus: $('perception-status'), transcriptPreview: $('transcript-preview'),
     modelProfileStatus: $('model-profile-status'), modelVerificationStatus: $('model-verification-status'),
     aiProvenance: $('ai-provenance'), start: $('start-session'),
     pause: $('pause-session'), stop: $('stop-session'), resume: $('resume-autopilot'),
@@ -45,6 +47,7 @@
   let profileOptionSignature = '';
   let inputChoiceTouched = false;
   let outputChoiceTouched = false;
+  let programStreamKey = null;
   const imageRequests = new Map();
   const imageUrls = new Map();
 
@@ -53,6 +56,13 @@
   }
 
   function finite(value) { return typeof value === 'number' && Number.isFinite(value); }
+  function playbackSession(state) {
+    const session = state && state.session || {};
+    const broadcast = state && state.broadcast;
+    if (!broadcast || !finite(broadcast.time_s)) return session;
+    return { ...session, time_s: broadcast.time_s,
+      status: session.status === 'running' && !broadcast.ready ? 'buffering' : session.status };
+  }
   function fmtTime(seconds) {
     if (!finite(seconds) || seconds < 0) return '00:00';
     const total = Math.floor(seconds);
@@ -140,6 +150,7 @@
     const idle = !status || status === 'idle' || status === 'stopped';
     const manuallyLatched = latestState && latestState.mode === 'manual';
     const stopPending = latestState && latestState.obs && latestState.obs.stop_pending;
+    refs.broadcastDelay.disabled = active;
     if (!refs.start.hasAttribute('aria-busy')) refs.start.disabled = !idle || stopPending;
     if (!refs.pause.hasAttribute('aria-busy')) refs.pause.disabled = !active;
     if (!refs.stop.hasAttribute('aria-busy')) refs.stop.disabled = !active && !stopPending;
@@ -166,7 +177,7 @@
     refs.modeDetail.textContent = detail;
   }
   function renderSession(state) {
-    const session = state.session || {};
+    const session = playbackSession(state);
     const program = state.program || {};
     const status = session.status || 'unknown';
     const active = status === 'running';
@@ -193,6 +204,13 @@
     refs.stage.classList.toggle('has-image', refs.programImage.classList.contains('is-visible'));
     if (session.input_mode && !inputChoiceTouched) refs.inputMode.value = session.input_mode;
     if (session.output_mode && !outputChoiceTouched) refs.outputMode.value = session.output_mode;
+    const b = state.broadcast || {};
+    refs.broadcastStatus.textContent = `${Number(b.delay_s ?? refs.broadcastDelay.value)}s delay · ${b.phase || 'standby'}`;
+    refs.broadcastMetrics.textContent = `Input ${fmtTime(state.session && state.session.time_s)} · On air ${fmtTime(b.time_s)} · ${Number(b.captured_fps || 0).toFixed(1)} captured fps · ${b.pending_cuts || 0} queued cuts · ${state.metrics && state.metrics.ai_deadline_misses || 0} missed deadlines`;
+    const p = state.perception || {};
+    const ps = p.status || {};
+    refs.perceptionStatus.textContent = `Speech: ${ps.speech && ps.speech.state || 'unavailable'} · Visual: ${ps.visual && ps.visual.state || 'unavailable'}`;
+    refs.transcriptPreview.textContent = p.transcript && p.transcript.text || 'No recent speech observations.';
   }
   function renderCameras(state) {
     const cameras = Array.isArray(state.cameras) ? state.cameras : [];
@@ -323,8 +341,18 @@
     const flower = state.flower || {};
     const verification = flower.model_status === 'verified' ? 'VERIFIED' : flower.model_status === 'configured_not_verified' ? 'NOT VERIFIED' : 'NOT REPORTED';
     refs.modelProfileStatus.textContent = profileBusy ? 'Switching profile…' : `${verification} · fresh AI response required after a switch`;
-    refs.modelVerificationStatus.textContent = verification;
-    refs.modelVerificationStatus.dataset.state = flower.model_status === 'verified' ? 'verified' : 'pending';
+    const cameraModel = models.roles && models.roles.camera;
+    const separateCamera = cameraModel && cameraModel.provider === 'flower';
+    $('model-profile-label').textContent = separateCamera ? 'DIRECTOR + CRITIC' : 'AI PROFILE';
+    if (separateCamera) {
+      const reasoning = cameraModel.reasoning_effort === 'none' ? 'reasoning off' : `reasoning ${cameraModel.reasoning_effort || 'default'}`;
+      const cameraVerified = cameraModel.verification_status === 'verified' ? 'VERIFIED' : 'NOT VERIFIED';
+      refs.modelProfileStatus.textContent = `Cameras: ${cameraModel.model} via Flower · ${reasoning} · ${cameraVerified}`;
+    }
+    const roleStates = models.roles ? Object.values(models.roles).map((role) => role.verification_status) : [];
+    const allVerified = roleStates.length > 0 && roleStates.every((status) => status === 'verified');
+    refs.modelVerificationStatus.textContent = roleStates.length ? (allVerified ? 'ALL ROLES VERIFIED' : roleStates.some((status) => status === 'verified') ? 'PARTIALLY VERIFIED' : 'NOT VERIFIED') : verification;
+    refs.modelVerificationStatus.dataset.state = allVerified ? 'verified' : 'pending';
   }
 
   function roleRecordKey(record) {
@@ -358,11 +386,14 @@
       const oldSession = result && (result.session_id !== currentSessionId
         || currentSessionEpoch === null || result.epoch !== currentSessionEpoch
         || (currentOverrideEpoch !== null && result.override_epoch !== currentOverrideEpoch));
-      const stale = oldEpoch || oldSession;
+      const assignment = state.models && state.models.roles && state.models.roles[role.decisionRole];
+      const wrongModel = result && assignment && assignment.model && result.model !== assignment.model;
+      const stale = oldEpoch || oldSession || wrongModel;
       const accepted = result && result.status === 'completed' && typeof result.response_id === 'string' && result.response_id.length > 0 && !stale;
       const failed = result && ['failed', 'error', 'rejected', 'incomplete'].includes(String(result.status || '').toLowerCase()) && !stale;
       let status = accepted ? 'VERIFIED' : failed ? 'RESPONSE FAILED' : stale ? (oldEpoch ? 'PREVIOUS PROFILE' : 'PREVIOUS ROUND') : modes[role.decisionRole] === 'llm' ? (active ? 'WAITING FOR RESPONSE' : 'NO RESPONSE YET') : 'ROLE NOT REPORTED';
       const details = [];
+      if (assignment && assignment.model && !accepted) details.push(`Configured: ${assignment.model}`);
       if (accepted) {
         if (finite(result.latency_ms)) details.push(`${Math.max(0, Math.round(result.latency_ms))} ms`);
         if (finite(result.output_tokens)) details.push(`${Math.max(0, Math.round(result.output_tokens))} output tokens`);
@@ -490,8 +521,16 @@
   }
   function refreshFrames() {
     const session = latestState && latestState.session;
-    if (!session || !['running', 'paused'].includes(session.status)) return;
-    void loadFrame('program', '/api/program.jpg');
+    if (!session) return;
+    const active = ['running', 'paused'].includes(session.status);
+    const streamKey = `${session.id}:${active}`;
+    if (programStreamKey !== streamKey) {
+      programStreamKey = streamKey;
+      refs.programImage.onload = () => { refs.programImage.classList.add('is-visible'); refs.stage.classList.add('has-image'); };
+      refs.programImage.onerror = () => { programStreamKey = null; };
+      refs.programImage.src = active ? `/api/program.mjpeg?session=${encodeURIComponent(session.id || '')}` : `/api/program.jpg?stopped=${Date.now()}`;
+    }
+    if (!active) return;
     const cameraImages = [...refs.cameraGrid.querySelectorAll('img[data-frame-key]')];
     if (cameraImages.length) {
       const index = refreshFrames.cameraIndex % cameraImages.length;
@@ -503,7 +542,7 @@
   refreshFrames.cameraIndex = 0;
 
   function syncPreviewAudio(state) {
-    const session = state.session || {};
+    const session = playbackSession(state);
     const available = Boolean(state.data && state.data.ami_available && session.input_mode === 'ami');
     if (!available) {
       if (!audioStartPending && session.input_mode !== 'ami') {
@@ -527,10 +566,11 @@
     if (newSession || newEpoch) {
       try { refs.audio.currentTime = Math.max(0, Number(session.time_s) || 0); } catch { /* Metadata may not have loaded yet. */ }
       audioEpoch = session.epoch;
-    } else if (finite(session.time_s) && Number.isFinite(refs.audio.currentTime) && Math.abs(refs.audio.currentTime - session.time_s) > 1.25) {
+    } else if (finite(session.time_s) && Number.isFinite(refs.audio.currentTime) && Math.abs(refs.audio.currentTime - session.time_s) > 0.3) {
       try { refs.audio.currentTime = Math.max(0, session.time_s); } catch { /* The media clock is not seekable yet. */ }
     }
     if (audioEnabled && session.status === 'running' && refs.audio.paused) {
+      refs.audio.muted = false;
       refs.audio.play().catch(() => {
         if (audioStartPending) return;
         audioEnabled = false;
@@ -545,7 +585,7 @@
   }
 
   function renderAudioControls(state) {
-    const session = state && state.session || {};
+    const session = playbackSession(state);
     const hasActiveSession = ['running', 'paused'].includes(session.status);
     const inputMode = audioStartPending || !hasActiveSession ? refs.inputMode.value : (session.input_mode || refs.inputMode.value);
     const amiMode = inputMode === 'ami';
@@ -561,6 +601,7 @@
     else if (audioMissing) refs.audioStatus.textContent = 'AMI audio is unavailable in this browser';
     else if (audioStartPending) refs.audioStatus.textContent = 'Unlocking AMI audio for session start…';
     else if (!available) refs.audioStatus.textContent = 'AMI audio source is not available';
+    else if (session.status === 'buffering') refs.audioStatus.textContent = 'Filling broadcast buffer · audio will start with delayed video';
     else if (!active) refs.audioStatus.textContent = 'AMI audio will start with the session';
     else if (audioEnabled && !refs.audio.paused) refs.audioStatus.textContent = `AMI replay playing · ${Math.round(refs.audio.volume * 100)}%`;
     else refs.audioStatus.textContent = 'AMI replay ready · click Unmute to listen';
@@ -570,7 +611,7 @@
     audioStartPending = true;
     audioMissing = false;
     audioEnabled = true;
-    refs.audio.muted = false;
+    refs.audio.muted = true;
     refs.audio.volume = Number(refs.audioVolume.value);
     refs.audio.src = '/api/audio';
     refs.audioToggle.setAttribute('aria-pressed', 'true');
@@ -580,7 +621,7 @@
     // seek this same element to the session clock; camera cuts never reset it.
     try {
       const unlock = refs.audio.play();
-      if (unlock && typeof unlock.catch === 'function') unlock.catch(() => {
+      if (unlock && typeof unlock.then === 'function') unlock.then(() => { if (playbackSession(latestState).status !== 'running') refs.audio.pause(); }).catch(() => {
         if (!audioStartPending) return;
         refs.audioStatus.textContent = 'Session starting · waiting for AMI audio';
       });
@@ -598,7 +639,7 @@
       if (!refs.audio.paused) refs.audio.pause();
     }
     try {
-      await runAction('/api/session/start', { input_mode: inputMode, output_mode: refs.outputMode.value, start_s: 0 }, refs.start, 'Session start requested.');
+      await runAction('/api/session/start', { input_mode: inputMode, output_mode: refs.outputMode.value, start_s: 0, output_delay_s: Number(refs.broadcastDelay.value) }, refs.start, 'Session start requested.');
     } catch {
       audioEnabled = false;
       if (!refs.audio.paused) refs.audio.pause();
@@ -606,7 +647,7 @@
       audioStartPending = false;
       if (inputMode === 'ami' && latestState && latestState.session && latestState.session.status === 'running' && latestState.session.input_mode === 'ami') {
         syncPreviewAudio(latestState);
-        if (audioEnabled && refs.audio.paused) {
+        if (audioEnabled && refs.audio.paused && playbackSession(latestState).status === 'running') {
           refs.audio.play().catch(() => {
             audioEnabled = false;
             toast('AMI audio needs a click to resume in this browser.', 'error');
@@ -619,7 +660,7 @@
   }
 
   refs.audio.addEventListener('loadedmetadata', () => {
-    const session = latestState && latestState.session;
+    const session = playbackSession(latestState);
     if (!session || session.input_mode !== 'ami' || !finite(session.time_s)) return;
     try { refs.audio.currentTime = Math.max(0, session.time_s); } catch { /* A later state snapshot retries the seek. */ }
   });
@@ -693,7 +734,7 @@
       renderAudioControls(latestState || {});
       return;
     }
-    const session = latestState && latestState.session;
+    const session = playbackSession(latestState);
     refs.audio.volume = Number(refs.audioVolume.value);
     refs.audio.muted = false;
     if (session && finite(session.time_s)) {

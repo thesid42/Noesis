@@ -1,16 +1,18 @@
 # Flower runtimes and setup
 
-Noesis defaults to Flower's native local runtime. A single local AgentApp run orchestrates six logical AI roles: four camera reviewers and a critic run in parallel, then the Director receives those reports and makes the editorial choice. No Flower account, hosted coordinator, or SuperNode registration is needed to use this mode.
+Noesis defaults to Flower's native local runtime. A single local AgentApp run orchestrates six logical AI roles: four camera reviewers and a critic refresh independently, while the Director pins their latest recent reports and a current source snapshot. Each role has at most one request in flight. No Flower account, hosted coordinator, or SuperNode registration is needed to use this mode.
 
-Model inference is remote: the local AgentApp sends compact source measurements and role reports through the Noesis loopback gateway to the configured Nebius endpoint. Orchestration and media/OBS control remain local. The model prompts do not contain raw video, raw audio, transcripts, or future annotations.
+Model inference is remote: the local AgentApp sends compact source measurements and role reports through the Noesis loopback gateway to the configured Nebius endpoint. Orchestration and media/OBS control remain local. The model prompts contain no raw video/audio or future annotations. Optional local transcription contributes recent unassigned speech text; lightweight frame analysis contributes timestamped blur, brightness, and face counts. These are background measurements, not a vision-language model.
 
 ## Roles and decision flow
 
 | AI role | Work |
 |---|---|
 | `camera-closeup1` … `camera-closeup4` | Independently assess measured health, speaking state, energy, quality, and age for one assigned close-up. Return a recommendation with a reason and confidence. |
-| `critic` | Assess the current measured round and bounded prior AI report history independently of the four current camera jobs. It provides editorial context and does not pick a camera. |
-| `director` | After the camera and critic results arrive, use their reports and a fresh source snapshot to choose `hold` or a healthy camera. |
+| `critic` | Assess current source evidence, recent transcript, actual aired shot history, and prior reports independently. It provides editorial context and does not pick a camera. |
+| `director` | Pin the latest four camera reports and critic report plus a fixed source timestamp, then choose `hold` or a healthy camera for that timestamp. |
+
+An optional `NOESIS_CAMERA_MODEL=qwen/qwen3.5-9b` override routes only the four camera roles to Flower's public Responses endpoint using `FLWR_MODEL_API_KEY`. Set `NOESIS_CAMERA_REASONING_EFFORT=none` for non-thinking camera responses. The director and critic retain the selected Nebius profile. Expected model identity is pinned per role, and the director may combine reports from the two configured models. Provider keys are held only by the local gateway.
 
 The controller validates the real model responses, request/session/model/override provenance, deadlines, and the target's current health before executing a choice. Manual camera control remains latched until explicit resume. If an AI response is missing or late, the controller holds a healthy current shot; if the on-air source fails, the health guard can move to a healthy source. The controller does not replace AI with speaker-score ranking.
 
@@ -19,7 +21,8 @@ The controller validates the real model responses, request/session/model/overrid
 Use Python 3.12 and `uv` from the project root:
 
 ```powershell
-uv sync --python 3.12 --extra flower --extra dev
+uv sync --python 3.12 --extra flower --extra dev --extra speech
+.\.venv\Scripts\python.exe scripts\prepare_speech.py
 Copy-Item .env.example .env  # skip if .env already exists
 ```
 
@@ -35,7 +38,7 @@ On macOS/Linux, use `./start.sh --obs`. Omit the OBS switch for preview output. 
 
 The dashboard labels the active orchestration as **Local Flower Run** and shows the AgentApp run ID/status when the runtime reports them. Its model verification indicator reflects completed, accepted model responses, not merely a configured profile or running Flower process.
 
-Local mode defaults to `--inference-transport gateway`. One persistent async client in the Flower AgentApp sends requests to the authenticated loopback gateway, avoiding a new Flower model subprocess for each request. The six AI roles, strict result schemas, provenance, replay epochs, deadlines, and source-health checks are unchanged. Provider keys remain in the gateway; the AgentApp receives only a local routing token through its process environment. State reports `inference_transport: gateway`. Opt into `--inference-transport flower` to use native Flower model tasks locally. Hosted SuperGrid automatically uses `flower`; an explicit gateway option is rejected with `--runtime supergrid`.
+Local mode defaults to `--inference-transport gateway`. One persistent async client in the Flower AgentApp sends requests to the authenticated loopback gateway, avoiding a new Flower model subprocess for each request. The six AI roles, strict result schemas, provenance, replay epochs, deadlines, and source-health checks are unchanged. Provider keys remain in the gateway; the AgentApp receives only a local routing token through its process environment. State reports `inference_transport: gateway` and `crew_mode: continuous_per_role`. Camera leases refresh no faster than once a second, critic leases once every two seconds; actual cadence also depends on inference time. Reports expire 15 seconds after their source was captured, not 15 seconds after the response arrives. Director evidence IDs remain immutable even when newer reports arrive. Opt into `--inference-transport flower` to use native Flower model tasks locally. Hosted SuperGrid automatically uses `flower`; an explicit gateway option is rejected with `--runtime supergrid`.
 
 To inspect or stop the local launcher from another terminal:
 

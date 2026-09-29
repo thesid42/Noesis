@@ -17,6 +17,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 from .ai_control import AIControlMixin
+from .broadcast import BroadcastMixin
 from typing import Any
 
 
@@ -46,7 +47,7 @@ class ControllerError(Exception):
         self.detail = detail
 
 
-class DirectorController(AIControlMixin):
+class DirectorController(BroadcastMixin, AIControlMixin):
     """Concurrency-safe local controller with non-blocking editorial input."""
 
     def __init__(
@@ -62,6 +63,7 @@ class DirectorController(AIControlMixin):
         model_name: str | None = None,
         model_catalog: list[dict] | None = None,
         model_profile: str = "kimi",
+        perception: Any | None = None,
     ) -> None:
         self.media = media
         self.obs_bridge = obs
@@ -127,6 +129,8 @@ class DirectorController(AIControlMixin):
         self._last_error: str | None = None
         self._obs_stop_pending = False
         self._last_obs_status = self._obs_snapshot()
+        self._init_broadcast(perception)
+        self._output_frame_cache = None
         self._init_ai(model_catalog, model_profile)
 
     async def start_background(self, interval_s: float = 0.15, obs_interval_s: float = 1.0) -> None:
@@ -150,6 +154,11 @@ class DirectorController(AIControlMixin):
                 task.cancel()
         if tasks:
             await asyncio.gather(*(task for task in tasks if task), return_exceptions=True)
+        if self.perception:
+            await asyncio.to_thread(self.perception.close)
+        close_media = getattr(self.media, "close", None)
+        if callable(close_media):
+            await asyncio.to_thread(close_media)
 
     async def _poll_loop(self, interval_s: float) -> None:
         while True:
@@ -228,6 +237,7 @@ class DirectorController(AIControlMixin):
                 self._session["time_s"] = self._as_float(media_snapshot.get("time_s"), 0.0)
                 self._session["duration_s"] = self._as_float(media_snapshot.get("duration_s"), 0.0)
                 natural_end = self._session["status"] == "running" and self._is_media_end(media_snapshot)
+                self._sync_broadcast_locked(media_snapshot.get("broadcast"))
 
             flower = self._flower_snapshot(now)
             self._mode = self._mode_for(flower)
@@ -237,7 +247,7 @@ class DirectorController(AIControlMixin):
                 self._add_event("ai_round_expired", "validator", "AI response deadline passed; retaining the current healthy shot.")
 
             if self._session["status"] == "running" and media_snapshot is not None and not natural_end:
-                cameras = self._camera_map(media_snapshot)
+                cameras = self._program_cameras_locked()
                 current = self._program["camera_id"]
                 current_camera = cameras.get(current)
                 if current == "slate" and self._mode != "manual":
@@ -263,6 +273,8 @@ class DirectorController(AIControlMixin):
                     self._unhealthy_since.pop(current, None)
                     self._reported_manual_faults.discard(current)
 
+        if media_snapshot is not None and self.perception:
+            self.perception.observe(media_snapshot, self.media, session_id_before, epoch_before)
         if natural_end and media_snapshot is not None:
             await self._finalize_media_end(session_id_before, epoch_before, media_snapshot)
             return
@@ -280,6 +292,9 @@ class DirectorController(AIControlMixin):
 
     @staticmethod
     def _is_media_end(snapshot: dict[str, Any]) -> bool:
+        broadcast = snapshot.get("broadcast")
+        if isinstance(broadcast, dict) and broadcast.get("delay_s", 0) > 0:
+            return broadcast.get("phase") == "ended"
         status = str(snapshot.get("status", "")).lower()
         if status in {"stopped", "ended", "eof", "finished"}:
             return True
@@ -357,10 +372,14 @@ class DirectorController(AIControlMixin):
         obs_state = self._obs_snapshot()
         flower_state = self._flower_snapshot(now)
         availability = self._media_availability()
+        editorial = self._editorial_context_locked()
         return {
             "session": copy.deepcopy(self._session),
             "mode": self._mode,
             "program": copy.deepcopy(self._program),
+            "broadcast": {**copy.deepcopy(self._broadcast), "pending_cuts": len(self._scheduled_cuts)},
+            "perception": editorial.get("perception", {}),
+            "shot_history": editorial.get("shot_history", []),
             "cameras": cameras,
             "obs": obs_state,
             "flower": flower_state,
@@ -445,14 +464,18 @@ class DirectorController(AIControlMixin):
         deployment = os.getenv("NOESIS_RUNTIME_DEPLOYMENT", "local")
         deployment = "supergrid" if deployment == "supergrid" else "local"
         inference_transport = "gateway" if deployment == "local" and os.getenv("NOESIS_INFERENCE_TRANSPORT") == "gateway" else "flower"
+        role_models = self._models_snapshot().get("roles", {})
+        selected_verified = any(role.get("model") == self.model_name and role.get("verification_status") == "verified"
+                                for role in role_models.values())
         return {
             "status": status,
-            "transport": (("Flower local AgentApp; persistent gateway to Nebius" if inference_transport == "gateway"
+            "transport": (("Flower local AgentApp; persistent gateway to model providers" if inference_transport == "gateway"
                            else "Flower local AgentApp; Flower model tasks to Nebius") if deployment == "local"
                           else "Flower SuperGrid native Grid; local media bridge"),
             "inference_transport": inference_transport,
+            "crew_mode": "continuous_per_role" if deployment == "local" else "assessment_rounds",
             **({"model": self.model_name} if self.model_name else {}),
-            "model_status": "verified" if self._last_model_result else "configured_not_verified" if self.model_name else "not_configured",
+            "model_status": "verified" if selected_verified else "configured_not_verified" if self.model_name else "not_configured",
             "topology": deployment,
             "deployment": deployment,
             "inference_results": copy.deepcopy(list(self._inference_results.values())),
@@ -468,7 +491,7 @@ class DirectorController(AIControlMixin):
             return "manual"
         return "autopilot" if flower.get("status") == "connected" else "degraded"
 
-    async def session_start(self, input_mode: str, output_mode: str, start_s: float = 0.0) -> dict[str, Any]:
+    async def session_start(self, input_mode: str, output_mode: str, start_s: float = 0.0, output_delay_s: float | None = None) -> dict[str, Any]:
         if input_mode not in ("synthetic", "ami"):
             raise ControllerError(422, "input_mode must be 'synthetic' or 'ami'.")
         if output_mode not in ("preview", "obs"):
@@ -490,6 +513,11 @@ class DirectorController(AIControlMixin):
             if input_mode == "ami" and not self._media_availability().get("ami_available"):
                 raise ControllerError(409, "AMI media is unavailable; see data.missing_files in /api/state.")
             try:
+                if output_delay_s is not None:
+                    configure = getattr(self.media, "configure_output", None)
+                    if not callable(configure):
+                        raise ValueError("This media source does not support delayed output.")
+                    await asyncio.to_thread(configure, output_delay_s)
                 await asyncio.to_thread(self.media.start, input_mode, float(start_s))
                 # Hold the shared replay clock while OBS prepares and confirms
                 # its one output source and recording.
@@ -589,6 +617,11 @@ class DirectorController(AIControlMixin):
                 self._latest_media = media_snapshot
                 self._remember_revision_locked(time.monotonic())
                 self._last_obs_status = self._obs_snapshot()
+                self._broadcast = dict(media_snapshot.get("broadcast", {}))
+                self._shot_history.clear()
+                self._shot_started_s = None
+                self._scheduled_cuts.clear()
+                self._metrics.update(ai_scheduled=0, ai_deadline_misses=0, ai_scheduled_rejected=0)
                 self._override_epoch = 0
                 self._manual_latched = False
                 self._program = {
@@ -609,7 +642,7 @@ class DirectorController(AIControlMixin):
         await self.tick()
         async with self._lock:
             if self._program["camera_id"] == "slate":
-                first_view = self._fallback_target(self._camera_map(self._latest_media))
+                first_view = self._fallback_target(self._program_cameras_locked())
                 if first_view != "slate":
                     self._set_program_locked(first_view, "Selected an available source at session start.", source="health")
         return await self.get_state()
@@ -632,6 +665,7 @@ class DirectorController(AIControlMixin):
                 self._session["time_s"] = self._as_float(media_snapshot.get("time_s"), self._session["time_s"])
                 self._session["duration_s"] = self._as_float(media_snapshot.get("duration_s"), self._session["duration_s"])
                 self._session["status"] = "paused"
+                self._broadcast = dict(media_snapshot.get("broadcast", self._broadcast))
                 self._session["epoch"] = session_epoch + 1
                 self._cancel_pending("Session paused; old decisions were invalidated.")
                 self._add_event("session_paused", "operator", "Paused replay.")
@@ -714,6 +748,9 @@ class DirectorController(AIControlMixin):
                 self._latest_media = media_snapshot
                 self._remember_revision_locked(time.monotonic())
                 self._session["time_s"] = self._as_float(media_snapshot.get("time_s"), float(time_s))
+                self._broadcast = dict(media_snapshot.get("broadcast", {}))
+                self._shot_history.clear()
+                self._shot_started_s = None
                 self._session["duration_s"] = self._as_float(media_snapshot.get("duration_s"), 0.0)
                 self._cancel_pending("Replay seek invalidated all older decisions.")
                 self._program["reason"] = "Replay seek; awaiting fresh source and speaker evidence."
@@ -760,7 +797,7 @@ class DirectorController(AIControlMixin):
                     raise ControllerError(409, "Manual override requires a running session.")
                 target = camera_id
                 if target != "slate":
-                    camera = self._camera_map(self._latest_media).get(target)
+                    camera = self._program_cameras_locked().get(target)
                     if not self._is_healthy(camera, running=True):
                         raise ControllerError(409, "Cannot manually select an unavailable camera.")
                 self._manual_latched = True
@@ -884,6 +921,7 @@ class DirectorController(AIControlMixin):
                 "flower": self._flower_snapshot(now),
                 "cameras": [self._compact_camera(camera) for camera in self._camera_map(self._latest_media).values()],
                 "observations": self._recent_camera_observations(now),
+                "editorial_context": self._editorial_context_locked(),
             }
 
 
@@ -928,13 +966,39 @@ class DirectorController(AIControlMixin):
         return payload
 
     async def get_program_frame(self) -> tuple[bytes, str]:
+        def frame_epoch():
+            return (self._session["id"], self._session["epoch"], self._override_epoch,
+                    self._broadcast.get("buffer_epoch"))
         async with self._lock:
+            captured_epoch = frame_epoch()
+        current_broadcast = None
+        broadcast_snapshot = getattr(self.media, "broadcast_snapshot", None)
+        if callable(broadcast_snapshot):
+            current_broadcast = await asyncio.to_thread(broadcast_snapshot)
+        async with self._lock:
+            if frame_epoch() != captured_epoch:
+                return self._slate_jpeg(), "slate"
+            self._sync_broadcast_locked(current_broadcast)
+            captured_epoch = frame_epoch()
             camera_id = self._program["camera_id"]
             input_mode = self._session["input_mode"]
             output_mode = self._session["output_mode"]
             status = self._session["status"]
             obs_state = self._obs_snapshot()
-        payload = await self.get_frame(camera_id)
+            program_time = self._broadcast_time_locked()
+            delayed = self._broadcast_active_locked()
+            ready = self._broadcast.get("ready", True)
+        if delayed and not ready:
+            payload, camera_id = self._slate_jpeg(), "slate"
+        elif delayed and camera_id != "slate":
+            payload = await asyncio.to_thread(self.media.frame_at, camera_id, program_time)
+            if not payload:
+                payload, camera_id = self._slate_jpeg(), "slate"
+        else:
+            payload = await self.get_frame(camera_id)
+        async with self._lock:
+            if frame_epoch() != captured_epoch:
+                return self._slate_jpeg(), "slate"
         labels = []
         if input_mode == "synthetic":
             labels.append("SYNTHETIC FEED")
@@ -948,9 +1012,20 @@ class DirectorController(AIControlMixin):
             labels.append("OBS NOT RECORDING")
         if status == "paused":
             labels.append("REPLAY PAUSED")
+        if delayed and not ready:
+            labels.append("FILLING BROADCAST BUFFER")
         if not labels:
             return payload, camera_id
-        return self._label_jpeg(payload, "  |  ".join(labels)), camera_id
+        label = "  |  ".join(labels)
+        cached = self._output_frame_cache
+        if cached and cached[0] == payload and cached[1] == label:
+            return cached[2], camera_id
+        labeled = await asyncio.to_thread(self._label_jpeg, payload, label)
+        async with self._lock:
+            if frame_epoch() != captured_epoch:
+                return self._slate_jpeg(), "slate"
+        self._output_frame_cache = (payload, label, labeled)
+        return labeled, camera_id
 
     async def get_audio_path(self) -> Any:
         try:
@@ -978,7 +1053,7 @@ class DirectorController(AIControlMixin):
                     current = self._program["camera_id"]
                     if current != expected_unhealthy:
                         return False
-                if target != "slate" and not self._is_healthy(self._camera_map(self._latest_media).get(target), running=True):
+                if target != "slate" and not self._is_healthy(self._program_cameras_locked().get(target), running=True):
                     return False
                 if target == self._program["camera_id"]:
                     return False
@@ -989,7 +1064,8 @@ class DirectorController(AIControlMixin):
         prior = self._program["camera_id"]
         if prior == camera_id:
             return
-        now_s = self._session["time_s"]
+        now_s = self._broadcast_time_locked()
+        self._record_aired_shot_locked(self._program, now_s)
         self._program = {
             "camera_id": camera_id,
             "scene": "NOESIS_Program",
@@ -1096,10 +1172,11 @@ class DirectorController(AIControlMixin):
     def _remember_revision_locked(self, now: float) -> None:
         revision = self._revision(self._latest_media)
         current = self._camera_map(self._latest_media)
-        if revision not in self._revision_history:
-            if len(self._revision_order) == self._revision_order.maxlen:
-                self._revision_history.pop(self._revision_order[0], None)
-            self._revision_order.append(revision)
+        if revision in self._revision_history:
+            return
+        if len(self._revision_order) == self._revision_order.maxlen:
+            self._revision_history.pop(self._revision_order[0], None)
+        self._revision_order.append(revision)
         self._revision_history[revision] = (now, copy.deepcopy(current))
 
     @staticmethod

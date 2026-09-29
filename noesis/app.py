@@ -27,6 +27,7 @@ class StartBody(BaseModel):
     input_mode: Literal["synthetic", "ami"] = "synthetic"
     output_mode: Literal["preview", "obs"] = "preview"
     start_s: float = Field(default=0.0, ge=0.0)
+    output_delay_s: float | None = Field(default=None, ge=0.0, le=15.0)
 
 
 class EmptyBody(BaseModel):
@@ -136,7 +137,7 @@ def _default_media() -> Any:
     try:
         from .media import MediaEngine  # owned by the media executor
 
-        return MediaEngine(data_dir=data_dir)
+        return MediaEngine(data_dir=data_dir, output_delay_s=float(os.getenv("NOESIS_OUTPUT_DELAY_S", "5")))
     except ImportError:
         return MissingMedia(data_dir)
 
@@ -150,12 +151,17 @@ def create_app(
 ) -> FastAPI:
     media_engine = media if media is not None else _default_media()
     obs_bridge = obs if obs is not None else SimpleOBSBridge()
+    perception = None
+    if controller is None and hasattr(media_engine, "frame_at"):
+        from .perception import BackgroundPerception
+        perception = BackgroundPerception(media_engine, Path(__file__).resolve().parents[1] / ".runtime/models/whisper-tiny.en")
     director = controller or DirectorController(
         media_engine,
         obs_bridge,
         model_name=os.getenv("NOESIS_MODEL") or None,
         model_catalog=json.loads(os.getenv("NOESIS_MODEL_CATALOG_JSON", "null")),
         model_profile=os.getenv("NOESIS_MODEL_PROFILE") or "kimi",
+        perception=perception,
     )
     should_auto_connect = (
         os.getenv("OBS_AUTOCONNECT", "false").strip().lower() in {"1", "true", "yes"}
@@ -207,7 +213,7 @@ def create_app(
 
     @app.post("/api/session/start")
     async def session_start(body: StartBody) -> dict[str, Any]:
-        return await director.session_start(body.input_mode, body.output_mode, body.start_s)
+        return await director.session_start(body.input_mode, body.output_mode, body.start_s, body.output_delay_s)
 
     @app.post("/api/session/pause")
     async def session_pause(_body: EmptyBody) -> dict[str, Any]:
@@ -246,6 +252,21 @@ def create_app(
     async def program_frame() -> Response:
         payload, _camera_id = await director.get_program_frame()
         return Response(payload, media_type="image/jpeg", headers={"Cache-Control": "no-store, max-age=0"})
+
+    @app.get("/api/program.mjpeg")
+    async def program_stream(request: Request) -> StreamingResponse:
+        async def frames():
+            while not await request.is_disconnected():
+                started = asyncio.get_running_loop().time()
+                payload, _ = await director.get_program_frame()
+                yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(payload)).encode() + b"\r\n\r\n" + payload + b"\r\n"
+                await asyncio.sleep(max(0.001, 1 / 30 - (asyncio.get_running_loop().time() - started)))
+        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+    @app.get("/api/ai/lease/{agent_id}")
+    async def ai_lease(agent_id: str):
+        return await director.ai_lease(agent_id)
 
     @app.get("/api/audio")
     async def program_audio() -> Response:

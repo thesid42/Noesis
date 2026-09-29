@@ -19,6 +19,15 @@
   let audioUnavailable = false;
   let audioSessionId = null;
   let audioEpoch = null;
+  let streamKey = null;
+
+  function playbackSession(state) {
+    const session = state && state.session || {};
+    const broadcast = state && state.broadcast;
+    if (!broadcast || typeof broadcast.time_s !== 'number') return session;
+    return { ...session, time_s: broadcast.time_s,
+      status: session.status === 'running' && !broadcast.ready ? 'buffering' : session.status };
+  }
 
   function fmtTime(seconds) {
     if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return '00:00';
@@ -42,7 +51,7 @@
     const incomingSessionId = state.session && state.session.id;
     if (incomingSessionId && incomingSessionId !== audioSessionId) audioUnavailable = false;
     current = state; lastStateAt = Date.now(); clockReceivedAt = performance.now();
-    const session = state.session || {};
+    const session = playbackSession(state);
     const program = state.program || {};
     const cameraId = program.camera_id;
     const camera = Array.isArray(state.cameras) ? state.cameras.find((item) => item.id === cameraId) : null;
@@ -50,7 +59,7 @@
     const status = session.status || 'unknown';
     const active = status === 'running';
     refs.live.dataset.active = String(active);
-    setText(refs.liveText, active ? 'ON AIR' : status === 'paused' ? 'PAUSED' : status === 'stopped' ? 'STOPPED' : 'STANDBY');
+    setText(refs.liveText, active ? 'ON AIR' : status === 'buffering' ? 'BUFFERING' : status === 'paused' ? 'PAUSED' : status === 'stopped' ? 'STOPPED' : 'STANDBY');
     setText(refs.clock, fmtTime(session.time_s));
     setText(refs.camera, name);
     setText(refs.reason, program.reason || (program.scene ? `Scene · ${program.scene}` : 'The controller’s selected camera will appear here.'));
@@ -114,7 +123,7 @@
   }
 
   function audioTarget() {
-    const session = current && current.session;
+    const session = playbackSession(current);
     if (!session) return 0;
     const elapsed = session.status === 'running' ? (performance.now() - clockReceivedAt) / 1000 : 0;
     return Math.max(0, Number(session.time_s) || 0) + elapsed;
@@ -126,15 +135,14 @@
 
   async function updateFrame() {
     const session = current && current.session;
-    if (frameInFlight || !session || Date.now() - lastStateAt > 3500 || !['running', 'paused'].includes(session.status)) return;
-    frameInFlight = true;
-    try {
-      refs.image.onload = () => { refs.image.classList.add('is-visible'); refs.output.classList.add('has-frame'); };
-      // Use a direct same-origin JPEG URL. This avoids Blob/object-URL
-      // decoding issues in OBS's embedded Chromium browser source.
-      refs.image.src = `/api/program.jpg?_=${Date.now()}`;
-    } catch { /* Keep the last delivered program frame visible during a transient read error. */ }
-    finally { frameInFlight = false; }
+    if (!session || Date.now() - lastStateAt > 3500) return;
+    const active = ['running', 'paused'].includes(session.status);
+    const key = `${session.id}:${active}`;
+    if (streamKey === key) return;
+    streamKey = key;
+    refs.image.onload = () => { refs.image.classList.add('is-visible'); refs.output.classList.add('has-frame'); };
+    refs.image.onerror = () => { streamKey = null; };
+    refs.image.src = active ? `/api/program.mjpeg?session=${encodeURIComponent(session.id || '')}` : `/api/program.jpg?stopped=${Date.now()}`;
   }
 
   async function fetchState() {
@@ -158,7 +166,7 @@
       audioEnabled = false; refs.audio.pause(); refs.audioButton.setAttribute('aria-pressed', 'false'); setText(refs.audioLabel, 'Enable program audio');
       return;
     }
-    const session = current.session || {};
+    const session = playbackSession(current);
     if (session.status !== 'running') return;
     if (!refs.audio.src) { refs.audio.src = '/api/audio'; audioSessionId = session.id; audioEpoch = session.epoch; }
     try {
@@ -191,5 +199,5 @@
       void fetchState();
     }
   }, 1000);
-  window.setInterval(updateFrame, 67);
+  window.setInterval(updateFrame, 250);
 })();

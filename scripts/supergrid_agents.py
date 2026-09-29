@@ -167,7 +167,8 @@ def serve(args) -> None:
     try:
         gateway_env = {**env, "NOESIS_GATEWAY_TOKEN": token}
         # Only the loopback gateway receives provider credentials, including env-only configuration.
-        gateway_env.update({k: v for k, v in config.items() if k.startswith(("NEBIUS_KIMI_", "NEBIUS_MINIMAX_"))})
+        gateway_env.update({k: v for k, v in config.items() if k.startswith(("NEBIUS_KIMI_", "NEBIUS_MINIMAX_"))
+                            or k in {"FLWR_MODEL_API_KEY", "FLWR_MODEL_API_ENDPOINT"}})
         spawn([sys.executable, "-m", "noesis.model_gateway"], "model-gateway", gateway_env)
         wait_local("http://127.0.0.1:8770/health")
         spawn([sys.executable, "-m", "noesis"], "app", env)

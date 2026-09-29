@@ -1,5 +1,34 @@
 # Inference latency investigation
 
+## Continuous camera updates, perception, and delayed output
+
+Measured on 29 September 2026 in local Flower run `6214313413897169354`, with Qwen3.5-9B camera agents through Flower (`reasoning.effort=none`), Kimi critic/director through Nebius, local speech/frame analysis enabled, OBS recording, and a five-second program delay.
+
+| Measurement | Observed |
+|---|---:|
+| Accepted Qwen camera reports | 23 |
+| Camera latency, median / range | 1.891 s / 1.188–6.719 s |
+| Accepted Kimi critic reports | 5 |
+| Accepted Kimi director decisions | 3 |
+| Director latency, median / range | 2.469 s / 1.282–3.266 s |
+| Scheduled / actually aired AI cuts | 1 / 1 (other decisions held the shot) |
+| First aired AI cut after replay start | about 10.7 s |
+| Missed output deadlines | 0 |
+| Capture rate across five sources, median | 18.06 fps |
+| Program MJPEG delivery rate | 25.35 updates/s |
+| Peak JPEG buffer memory | 12.06 MiB |
+| State API latency, p95 | 26.9 ms |
+
+This is one short AMI excerpt, not a reliable tail-latency or editorial-quality evaluation. A preceding all-Kimi run had one decision miss the five-second window. The delay budgets time after the director's fixed target snapshot; it does not remove initial camera/critic bootstrap or make old reports current. Choose eight or ten seconds in the UI if the current provider workload repeatedly exceeds five seconds. A late choice is rejected; it never rewrites footage that has already aired.
+
+The source files themselves have different rates: Closeup1 and Corner are 12.54 fps, and the other three close-ups are 25 fps, averaging about 20 fps. A 30 fps capture/stream target does not create new motion in those sources. In a separate 12-second local media check, enabling ASR/CV left median capture throughput essentially unchanged at 19.10 fps; snapshot p95 was 0.50 ms without and 0.66 ms with perception. Under the complete live workload, four-second speech chunks had a sampled median processing time of 1.86 seconds; five-camera visual batches had a sampled median of 63 ms. Both run in background workers and never gate a director request or frame delivery. These workload samples do not isolate CPU cost precisely.
+
+The OBS recording is 25.166 seconds including initial buffer fill, with silence in its first four seconds. Waveform correlation against the source mix measured about 5.35 seconds of audio offset, including startup/output capture timing; three windows ranged from 5.32 to 5.38 seconds. This establishes delayed continuous audio, not frame-accurate lip-sync. The browser source must be refreshed after player changes: setup now refreshes only Noesis's existing source and refuses to change it while recording.
+
+Private evidence: `.runtime/continuous-ami-live.json`, `.runtime/continuous-media-benchmark.json`; local remux: `recordings/verified-qwen-delayed-ami.mp4`. The previous all-Kimi run is preserved separately as `.runtime/continuous-ami-kimi-only.json`.
+
+Qwen3.5-4B was not present in the public OpenRouter catalog and Flower rejected that model ID. The user approved Qwen3.5-9B instead. A `low` reasoning probe consumed all 320 output tokens without camera JSON; an explicit `none` probe completed with 55 tokens, so non-thinking mode was approved and enabled. Four camera roles use that setting; Kimi requests do not receive the Qwen reasoning override.
+
 ## Persistent gateway comparison
 
 On 29 September 2026, three fresh synthetic Kimi rounds were measured with each transport: 18 accepted responses per run, all six roles, with no unmatched responses, model timeouts, or rejected proposals. The baseline native local Flower run was `1073690520930975656`; the persistent gateway run was `5195545927455980589`.
@@ -75,7 +104,7 @@ This uses live Kimi calls and a synthetic preview, then stops its replay. Privat
 ## Recommended next changes
 
 1. Persistent gateway connections are implemented, measured above, and the default locally. The original Flower model-task route remains available for comparison and is used by hosted SuperGrid.
-2. Test `Qwen/Qwen3.5-4B` with thinking disabled for camera roles, keeping Kimi for the director. The [official model card](https://huggingface.co/Qwen/Qwen3.5-4B) documents vLLM serving and `chat_template_kwargs.enable_thinking=false`. This is a candidate recommendation, not measured Qwen latency or quality.
-3. Replace synchronized assessment rounds with five independent assessment leases and one separate director lease. This design is not enabled yet. Each role samples a new snapshot after its prior call finishes, with at most one call per role. The director pins immutable copies of five sufficiently recent reports plus a fresh source snapshot. New reports can arrive while it thinks without replacing the evidence being validated.
+2. Qwen3.5-9B camera roles through Flower are now enabled and measured above. A separately hosted `Qwen/Qwen3.5-4B` endpoint remains a possible future comparison; no 4B deployment has been measured here.
+3. Independent assessment leases and a separate director lease are now implemented locally, measured above. Hosted coordinator rounds remain available. Each role samples a new snapshot after its prior call finishes, with at most one call per role. The director pins immutable copies of five sufficiently recent reports plus a fresh source snapshot. New reports can arrive while it thinks without replacing the evidence being validated.
 
-Continuous mode needs source-age limits measured from snapshot capture, role-specific model assignment, and invalidation on pause, seek, manual override, or model changes. Director validation must use its pinned response IDs and current source health. It must never reuse old evidence just by resetting its timestamp on arrival. Continuous updates improve steady-state cadence; first startup still waits for initial reports. Timing and quality should be remeasured with four concurrent Qwen requests before choosing final freshness limits.
+Continuous mode enforces acquisition-age limits, role-specific model assignment, and invalidation on pause, seek, manual override, or model changes. Director validation must use its pinned response IDs and current source health. It must never reuse old evidence just by resetting its timestamp on arrival. Continuous updates improve steady-state cadence; first startup still waits for initial reports. Timing and quality should be remeasured with four concurrent Qwen requests before choosing final freshness limits.

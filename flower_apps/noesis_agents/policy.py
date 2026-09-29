@@ -55,11 +55,104 @@ def _number(value: Any) -> int | float | None:
     return value
 
 
-def safe_round_input(round_data: dict[str, Any]) -> dict[str, Any]:
+def _context_number(value: Any) -> int | float | None:
+    number = _number(value)
+    return round(number, 3) if isinstance(number, float) else number
+
+
+def _safe_editorial_context(raw: Any, *, assigned_camera_id: str | None = None) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, Any] = {}
+    broadcast = raw.get("broadcast")
+    if isinstance(broadcast, dict):
+        result["broadcast"] = {
+            key: _context_number(broadcast.get(key))
+            for key in ("time_s", "delay_s") if _number(broadcast.get(key)) is not None
+        } | ({"phase": str(broadcast["phase"])[:32]} if isinstance(broadcast.get("phase"), str) else {})
+    history = []
+    for item in raw.get("shot_history", []) if assigned_camera_id is None and isinstance(raw.get("shot_history"), list) else []:
+        if not isinstance(item, dict) or item.get("camera_id") not in CAMERA_CHOICES:
+            continue
+        history.append({
+            "camera_id": item["camera_id"],
+            **{key: _context_number(item.get(key)) for key in ("start_s", "end_s", "duration_s") if _number(item.get(key)) is not None},
+            **({"reason": str(item["reason"])[:120]} if isinstance(item.get("reason"), str) else {}),
+            **({"source": str(item["source"])[:40]} if isinstance(item.get("source"), str) else {}),
+        })
+    if history:
+        result["shot_history"] = history[-8:]
+    pending = []
+    for item in raw.get("pending_cuts", []) if assigned_camera_id is None and isinstance(raw.get("pending_cuts"), list) else []:
+        if not isinstance(item, dict) or item.get("camera_id") not in CAMERA_CHOICES:
+            continue
+        pending.append({"camera_id": item["camera_id"], **({"target_media_time_s": _context_number(item.get("target_media_time_s"))} if _number(item.get("target_media_time_s")) is not None else {})})
+    if pending:
+        result["pending_cuts"] = pending[-4:]
+
+    perception = raw.get("perception")
+    if not isinstance(perception, dict):
+        return result
+    safe_perception: dict[str, Any] = {}
+    status = perception.get("status")
+    if isinstance(status, dict):
+        safe_perception["status"] = {
+            str(name)[:24]: {
+                **({"state": str(item.get("state"))[:32]} if isinstance(item.get("state"), str) else {}),
+                **({"latency_ms": _context_number(item.get("latency_ms"))} if _number(item.get("latency_ms")) is not None else {}),
+            }
+            for name, item in status.items() if name in {"speech", "visual"} and isinstance(item, dict)
+        }
+    transcript = perception.get("transcript") if assigned_camera_id is None else None
+    if isinstance(transcript, dict):
+        segments = []
+        for item in transcript.get("segments", []) if isinstance(transcript.get("segments"), list) else []:
+            if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+                continue
+            segments.append({
+                "text": item["text"][:280],
+                **{key: _context_number(item.get(source)) for key, source in (("source_start_s", "source_start_s"), ("source_end_s", "source_end_s"), ("age_ms", "age_ms")) if _number(item.get(source)) is not None},
+                "speaker_id": item.get("speaker_id")[:80] if isinstance(item.get("speaker_id"), str) else None,
+            })
+        if segments:
+            safe_perception["transcript"] = {"segments": segments[-5:]}
+    observations_by_camera: dict[str, tuple[float, int, dict[str, Any]]] = {}
+    cutoff = _number(perception.get("source_end_s"))
+    for index, item in enumerate(perception.get("visual_observations", []) if isinstance(perception.get("visual_observations"), list) else []):
+        if not isinstance(item, dict) or item.get("camera_id") not in CAMERA_CHOICES:
+            continue
+        if assigned_camera_id is not None and item["camera_id"] != assigned_camera_id:
+            continue
+        source_time = _number(item.get("source_time_s"))
+        if source_time is None or (cutoff is not None and source_time > cutoff + 1e-6):
+            continue
+        safe_item = {
+            "camera_id": item["camera_id"],
+            **{key: _context_number(item.get(key)) for key in ("source_time_s", "age_ms", "blur_score", "luma_mean") if _number(item.get(key)) is not None},
+            **({"face_count": int(item["face_count"])} if isinstance(item.get("face_count"), int) and not isinstance(item.get("face_count"), bool) and item["face_count"] >= 0 else {}),
+            **({"face_status": str(item["face_status"])[:48]} if isinstance(item.get("face_status"), str) else {}),
+        }
+        prior = observations_by_camera.get(item["camera_id"])
+        if prior is None or (source_time, index) > (prior[0], prior[1]):
+            observations_by_camera[item["camera_id"]] = (source_time, index, safe_item)
+    observations = [item for _source_time, _index, item in observations_by_camera.values()]
+    observations.sort(key=lambda item: (-item["source_time_s"], CAMERA_CHOICES.index(item["camera_id"])))
+    if observations:
+        safe_perception["visual_observations"] = observations[:1] if assigned_camera_id is not None else observations[:5]
+    if cutoff is not None:
+        safe_perception["source_end_s"] = _context_number(cutoff)
+    if safe_perception:
+        result["perception"] = safe_perception
+    return result
+
+
+def safe_round_input(round_data: dict[str, Any], *, assigned_camera_id: str | None = None) -> dict[str, Any]:
     """Whitelist current measured evidence; never pass arbitrary controller fields."""
     cameras = []
     for camera in round_data.get("cameras", []) if isinstance(round_data.get("cameras"), list) else []:
         if not isinstance(camera, dict) or camera.get("id") not in CAMERA_CHOICES:
+            continue
+        if assigned_camera_id is not None and camera.get("id") != assigned_camera_id:
             continue
         cameras.append({
             "id": camera.get("id"),
@@ -124,4 +217,7 @@ def safe_round_input(round_data: dict[str, Any]) -> dict[str, Any]:
                 continue
         previous.append(row)
     result["previous_reports"] = previous[:8]
+    context = _safe_editorial_context(round_data.get("editorial_context"), assigned_camera_id=assigned_camera_id)
+    if context:
+        result["editorial_context"] = context
     return result

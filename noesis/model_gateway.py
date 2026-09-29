@@ -1,4 +1,4 @@
-"""Local, model-allowlisted Open Responses proxy for Nebius credentials.
+"""Local, model-allowlisted Open Responses proxy for private provider credentials.
 
 Flower SuperLink talks only to this service. Provider keys remain in the private
 project environment and are selected by the requested, configured model ID.
@@ -34,6 +34,7 @@ GATEWAY_TOKEN_FILE = ROOT / ".runtime" / "supergrid" / "gateway-token"
 GATEWAY_TOKEN_ENV = "NOESIS_GATEWAY_TOKEN"
 DEFAULT_PROFILE = "kimi"
 ALLOWED_PROVIDER_HOST = "api.tokenfactory.tf-ca1.nebius.com"
+FLOWER_MODEL_ENDPOINT = "https://api.flower.ai/v1/responses"
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 LOGGER = logging.getLogger("noesis.model_gateway")
 TIMING_PATH_ENV = "NOESIS_GATEWAY_TIMING_LOG_PATH"
@@ -54,8 +55,10 @@ class ProviderTarget:
 
 
 def _effective_environment(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    if environ is not None:
+        return dict(environ)
     values = {key: value for key, value in dotenv_values(ROOT / ".env").items() if value is not None}
-    values.update(os.environ if environ is None else environ)
+    values.update(os.environ)
     return values
 
 
@@ -92,8 +95,19 @@ def load_provider_targets(environ: Mapping[str, str] | None = None) -> dict[str,
         if model in targets:
             raise ValueError("Configured Nebius profiles must use distinct model IDs.")
         targets[model] = ProviderTarget(profile, model, endpoint, key, label)
+    camera_model = str(values.get("NOESIS_CAMERA_MODEL", "")).strip()
+    if camera_model:
+        endpoint = str(values.get("FLWR_MODEL_API_ENDPOINT", FLOWER_MODEL_ENDPOINT)).strip() or FLOWER_MODEL_ENDPOINT
+        key = str(values.get("FLWR_MODEL_API_KEY", "")).strip()
+        if endpoint.rstrip("/") != FLOWER_MODEL_ENDPOINT:
+            raise ValueError("Flower camera models require https://api.flower.ai/v1/responses.")
+        if not key:
+            raise ValueError("Configure FLWR_MODEL_API_KEY for the Flower camera model.")
+        if camera_model in targets:
+            raise ValueError("The Flower camera model must have a distinct provider model ID.")
+        targets[camera_model] = ProviderTarget("flower_camera", camera_model, FLOWER_MODEL_ENDPOINT, key, "Flower camera model")
     if not targets:
-        raise ValueError("No Nebius model profiles are configured.")
+        raise ValueError("No model providers are configured.")
     return targets
 
 
@@ -103,6 +117,7 @@ def model_catalog_json(targets: Mapping[str, ProviderTarget] | None = None) -> s
     options = [
         {"id": item.profile, "profile": item.profile, "model": item.model, "label": item.label, "available": True}
         for item in sorted(configured.values(), key=lambda target: target.profile)
+        if item.profile in PROFILE_ENV
     ]
     return json.dumps(options, separators=(",", ":"), ensure_ascii=True)
 
