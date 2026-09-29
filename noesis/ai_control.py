@@ -107,7 +107,7 @@ class AIControlMixin:
                     ]),
                 }
                 self._metrics["ai_rounds"] += 1
-                self._add_event("ai_round_started", "supergrid", "Requested four AI camera recommendations, a critic assessment, and an AI director decision.")
+                self._add_event("ai_round_started", "flower", "Requested four AI camera recommendations, a critic assessment, and an AI director decision.")
             result = {k: copy.deepcopy(v) for k, v in self._ai_round.items() if k != "deadline_mono"}
             result["deadline_remaining_ms"] = max(0, int((self._ai_round["deadline_mono"] - now) * 1000))
             return result

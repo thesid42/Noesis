@@ -1,7 +1,8 @@
-"""Verify real six-role AI collaboration and a model-directed cut on SuperGrid.
+"""Verify real six-role AI collaboration and a model-directed cut on Flower.
 
-Requires supergrid_agents.py serve. Replaces the current replay; uses live model
-credits and stores non-secret provenance in .runtime/supergrid.
+Requires a running Noesis launcher. Pass --runtime local for local Flower.
+Replaces the current replay, uses live model credits, and stores non-secret
+provenance in .runtime/<runtime>.
 """
 from __future__ import annotations
 
@@ -19,10 +20,11 @@ ROLES = {"director", "critic", *(f"camera-closeup{i}" for i in range(1, 5))}
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=("kimi", "minimax"), default="kimi")
+    parser.add_argument("--runtime", choices=("local", "supergrid"), default="supergrid")
     parser.add_argument("--preview-only", action="store_true")
     parser.add_argument("--timeout-s", type=int, default=110)
     args = parser.parse_args()
-    report = {"profile": args.profile, "checks": {}, "model_responses": []}
+    report = {"profile": args.profile, "runtime": args.runtime, "checks": {}, "model_responses": []}
     seen = set()
     with httpx.Client(base_url="http://127.0.0.1:8765", timeout=20, trust_env=False) as client:
         def post(path, body=None):
@@ -41,13 +43,14 @@ def main():
             current = post("/api/session/start", {"input_mode": "synthetic", "output_mode": "preview" if args.preview_only else "obs"})
             report["session"] = current["session"]
             report["model"] = current["flower"]["model"]
+            started_at = time.monotonic()
             deadline = time.monotonic() + args.timeout_s
             while time.monotonic() < deadline:
                 current = state()
                 for row in current["flower"]["inference_results"]:
                     if row["response_id"] not in seen and row["session_id"] == report["session"]["id"]:
                         seen.add(row["response_id"])
-                        report["model_responses"].append(row)
+                        report["model_responses"].append({**row, "observed_after_s": round(time.monotonic() - started_at, 3)})
                         print(json.dumps({"role": row["agent_id"], "latency_ms": row["latency_ms"], "result": row["result"]}), flush=True)
                 proven = {row["agent_id"] for row in report["model_responses"]}
                 if ROLES <= proven and current["metrics"]["ai_cuts"] >= 1:
@@ -55,10 +58,11 @@ def main():
                 time.sleep(0.4)
             else:
                 raise AssertionError("Six verified AI roles and an actual model-directed cut were not observed within the budget")
-            assert current["flower"]["grid_run"].get("status") == "running", "No authenticated running SuperGrid coordinator"
+            assert current["flower"].get("deployment") == args.runtime, "Unexpected Flower deployment"
+            assert current["flower"]["grid_run"].get("status") == "running", "No running Flower AgentApp"
             assert all(row["model"] == report["model"] for row in report["model_responses"])
             report["grid_run"] = current["flower"]["grid_run"]
-            report["checks"].update(six_ai_roles=True, actual_model_cut=True, supergrid_running=True)
+            report["checks"].update(six_ai_roles=True, actual_model_cut=True, runtime_running=True)
             failed = current["program"]["camera_id"]
             fallback_count = current["metrics"]["fallbacks"]
             started = time.monotonic()
@@ -82,7 +86,7 @@ def main():
             report["passed"] = True
         finally:
             post("/api/session/stop")
-            destination = ROOT / ".runtime/supergrid" / f"{args.profile}-acceptance.json"
+            destination = ROOT / ".runtime" / args.runtime / f"{args.profile}-acceptance.json"
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_text(json.dumps(report, indent=2), encoding="utf-8")
             print(json.dumps({"passed": report.get("passed", False), "checks": report["checks"], "report": str(destination)}), flush=True)

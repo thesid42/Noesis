@@ -24,7 +24,7 @@
     cuts: $('cuts-count'), fallbacks: $('fallbacks-count'), sessionStatus: $('session-status'),
     cameraGrid: $('camera-grid'), sourceCount: $('source-count'), faultCamera: $('fault-camera'),
     crewState: $('crew-state'), crewSummary: $('flower-summary'), agentList: $('agent-list'),
-    gridRun: $('grid-run'), gridRunId: $('grid-run-id'), gridRunStatus: $('grid-run-status'),
+    gridRun: $('grid-run'), gridRunLabel: $('grid-run-label'), gridRunId: $('grid-run-id'), gridRunStatus: $('grid-run-status'),
     traceList: $('trace-list'), traceCount: $('trace-count'), obsStatus: $('obs-status'),
     obsIndicator: $('obs-indicator'), opsFootnote: $('ops-footnote'), audio: $('preview-audio'),
     audioToggle: $('preview-audio-toggle'), audioVolume: $('preview-audio-volume'), audioStatus: $('preview-audio-status'),
@@ -252,6 +252,9 @@
   }
   function renderFlower(state) {
     const flower = state.flower || {};
+    const gridRun = flower.grid_run && typeof flower.grid_run === 'object' ? flower.grid_run : {};
+    const deployment = String(flower.deployment || gridRun.deployment || '').toLowerCase();
+    const deploymentLabel = deployment === 'local' ? 'Local Flower' : deployment === 'supergrid' ? 'SuperGrid' : 'Flower';
     renderModelProfile(state);
     const agents = Array.isArray(flower.agents) ? flower.agents : (latestAgentSnapshot && Array.isArray(latestAgentSnapshot.agents) ? latestAgentSnapshot.agents : []);
     const flowerStatus = String(flower.status || (latestAgentSnapshot && latestAgentSnapshot.status) || 'not reported');
@@ -260,14 +263,14 @@
     const profileStatus = flower.model_status === 'verified' ? 'verified' : flower.model_status === 'configured_not_verified' ? 'configured · not verified' : 'status not reported';
     const profileLabel = selectedModel && selectedModel.label ? selectedModel.label : 'AI profile';
     refs.crewSummary.textContent = flowerStatus === 'not reported'
-      ? `${profileLabel} · ${profileStatus} · no Flower status reported`
-      : `${flowerStatus} · ${profileLabel} · ${profileStatus}`;
-    const gridRun = flower.grid_run && typeof flower.grid_run === 'object' ? flower.grid_run : {};
+      ? `${deploymentLabel} · ${profileLabel} · ${profileStatus} · no agent status reported`
+      : `${deploymentLabel} · ${flowerStatus} · ${profileLabel} · ${profileStatus}`;
     const gridRunId = typeof gridRun.run_id === 'string' ? gridRun.run_id.trim() : '';
     const gridRunStatus = [gridRun.status, gridRun.sub_status]
       .filter((value) => typeof value === 'string' && value.trim())
       .join(' · ');
     refs.gridRun.hidden = !gridRunId && !gridRunStatus;
+    refs.gridRunLabel.textContent = deployment === 'local' ? 'LOCAL FLOWER RUN' : deployment === 'supergrid' ? 'SUPERGRID RUN' : 'FLOWER RUN';
     refs.gridRunId.textContent = gridRunId ? `#${gridRunId}` : 'No run ID reported';
     refs.gridRunStatus.textContent = gridRunStatus ? gridRunStatus.toUpperCase() : 'STATUS NOT REPORTED';
     refs.gridRunStatus.title = gridRun.checked_at ? `Last checked ${String(gridRun.checked_at)}` : '';

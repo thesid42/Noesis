@@ -69,6 +69,17 @@ def test_profile_endpoint_and_allowlist_fail_closed() -> None:
         assert calls[-1].url == ENDPOINT
 
 
+def test_unkeyed_optional_profile_does_not_block_kimi() -> None:
+    values = _env()
+    values["NEBIUS_MINIMAX_API_KEY"] = ""
+    targets = load_provider_targets(values)
+    assert set(targets) == {"kimi-model"}
+    assert "minimax" not in model_catalog_json(targets)
+    values["NEBIUS_KIMI_API_ENDPOINT"] = ""
+    with pytest.raises(ValueError, match="incomplete"):
+        load_provider_targets(values)
+
+
 def test_gateway_auth_and_provider_failures_never_echo_credentials_or_body() -> None:
     targets = {
         "kimi-model": ProviderTarget("kimi", "kimi-model", ENDPOINT, "private-kimi-key", "Kimi"),

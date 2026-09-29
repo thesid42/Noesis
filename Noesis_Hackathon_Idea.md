@@ -1,4 +1,6 @@
 # Noesis
+
+> Runtime update (29 September 2026): local Flower orchestration is now the default to remove hosted queue and Grid transport overhead. One persistent AgentApp contains six real AI roles, using remote Nebius Kimi inference. The original SuperGrid deployment below is retained as an explicit hosted option. See [the current launch guide](docs/FLOWER.md).
 ## Autonomous production crew for panel discussions
 
 Updated: 29 September 2026.

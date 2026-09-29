@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any
 from urllib.parse import urlsplit
 import uuid
@@ -25,6 +27,7 @@ from noesis_agents.policy import (
 
 
 RUNTIME = "Flower SuperGrid AgentApp/1.39"
+LOCAL_RUNTIME = "Flower local AgentApp/1.39"
 DEFAULT_CONTROLLER_URL = "http://127.0.0.1:8765"
 HEARTBEAT_INTERVAL_S = 2.0
 MODEL_TIMEOUT_S = 25.0
@@ -38,6 +41,12 @@ class AgentTaskError(RuntimeError):
         super().__init__(code)
         self.code = code
         self.status_code = status_code
+
+
+def _wall_timeout(value: Any, *, default: float, maximum: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return default
+    return max(0.05, min(maximum, float(value)))
 
 
 def _emit(agent: AgentSession, event_type: str, **fields: Any) -> None:
@@ -86,12 +95,14 @@ def _http_json(
     payload: dict[str, Any] | None = None,
     timeout_s: float = 2.0,
 ) -> Any:
+    wall_timeout = _wall_timeout(timeout_s, default=2.0, maximum=30.0)
     try:
-        with httpx.Client(timeout=timeout_s, trust_env=False) as client:
-            if payload is None:
-                response = client.get(f"{controller_url}{path}")
-            else:
-                response = client.post(f"{controller_url}{path}", json=payload)
+        response = asyncio.run(asyncio.wait_for(
+            _async_controller_request(controller_url, path, payload, wall_timeout),
+            timeout=wall_timeout,
+        ))
+    except TimeoutError as exc:
+        raise AgentTaskError("controller_timeout") from exc
     except httpx.TimeoutException as exc:
         raise AgentTaskError("controller_timeout") from exc
     except httpx.HTTPError as exc:
@@ -105,11 +116,24 @@ def _http_json(
     return value
 
 
+async def _async_controller_request(
+    controller_url: str,
+    path: str,
+    payload: dict[str, Any] | None,
+    timeout_s: float,
+) -> httpx.Response:
+    """Read a complete HTTP response under an outer cancellable wall timeout."""
+    async with httpx.AsyncClient(timeout=timeout_s, trust_env=False) as client:
+        if payload is None:
+            return await client.get(f"{controller_url}{path}")
+        return await client.post(f"{controller_url}{path}", json=payload)
+
+
 def _heartbeat_body(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     body: dict[str, Any] = {
         "agent_id": config["agent_id"],
         "role": config["role"],
-        "runtime": RUNTIME,
+        "runtime": config.get("runtime", RUNTIME),
         "run_id": run_id,
         "decision_mode": "llm",
     }
@@ -254,23 +278,41 @@ def _response_text(response: Any) -> tuple[str, str, int, int]:
     return output, response_id, input_tokens, output_tokens
 
 
+async def _async_model_response(
+    base_url: str,
+    api_key: str,
+    model: str,
+    instructions: str,
+    data: dict[str, Any],
+    schema_name: str,
+    schema: dict[str, Any],
+    timeout_s: float,
+) -> Any:
+    """Make one Flower-runtime request using an async client that can be cancelled."""
+    from openai import AsyncOpenAI
+
+    async with AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout_s, max_retries=0) as client:
+        return await client.responses.create(
+            model=model,
+            instructions=instructions,
+            input=json.dumps(data, separators=(",", ":"), allow_nan=False),
+            text={"format": {"type": "json_schema", "name": schema_name, "schema": schema, "strict": True}},
+            max_output_tokens=320,
+        )
+
+
 def _infer(model: str, instructions: str, data: dict[str, Any], schema_name: str, schema: dict[str, Any], *, timeout_s: float = MODEL_TIMEOUT_S) -> dict[str, Any]:
     base_url = os.environ.get("FLWR_RUNTIME_BASE_URL")
     api_key = os.environ.get("FLWR_RUNTIME_API_KEY")
     if not isinstance(base_url, str) or not base_url or not isinstance(api_key, str) or not api_key:
         raise AgentTaskError("flower_model_runtime_unavailable")
-    from openai import OpenAI
-
     started = time.monotonic()
+    wall_timeout = _wall_timeout(timeout_s, default=MODEL_TIMEOUT_S, maximum=MODEL_TIMEOUT_S)
     try:
-        with OpenAI(base_url=base_url, api_key=api_key, timeout=max(1.0, min(MODEL_TIMEOUT_S, timeout_s)), max_retries=0) as client:
-            response = client.responses.create(
-                model=model,
-                instructions=instructions,
-                input=json.dumps(data, separators=(",", ":"), allow_nan=False),
-                text={"format": {"type": "json_schema", "name": schema_name, "schema": schema, "strict": True}},
-                max_output_tokens=320,
-            )
+        response = asyncio.run(asyncio.wait_for(
+            _async_model_response(base_url, api_key, model, instructions, data, schema_name, schema, wall_timeout),
+            timeout=wall_timeout,
+        ))
     except Exception as exc:
         # Model SDK exceptions can embed request/response bodies; report only type.
         raise AgentTaskError(f"model_request_{type(exc).__name__}") from None
@@ -827,6 +869,192 @@ def _run_director(
     _log("director_decision_missing", request_id=round_data.get("request_id"))
 
 
+def _local_crew_configs(controller_url: str) -> list[dict[str, Any]]:
+    configs = [
+        {"agent_id": f"camera-{camera_id}", "role": "camera", "camera_id": camera_id,
+         "controller_url": controller_url, "runtime": LOCAL_RUNTIME}
+        for camera_id in CAMERA_IDS
+    ]
+    configs.extend(
+        {"agent_id": role, "role": role, "controller_url": controller_url, "runtime": LOCAL_RUNTIME}
+        for role in ("critic", "director")
+    )
+    return configs
+
+
+def _start_local_heartbeats(
+    agent: AgentSession,
+    run_id: str,
+    configs: list[dict[str, Any]],
+) -> tuple[threading.Event, list[threading.Thread]]:
+    stop = threading.Event()
+    threads = [
+        threading.Thread(
+            target=_heartbeat_loop,
+            args=(stop, config, run_id, agent),
+            name=f"local-heartbeat-{config['agent_id']}",
+            daemon=True,
+        )
+        for config in configs
+    ]
+    for thread in threads:
+        thread.start()
+    return stop, threads
+
+
+def _stop_heartbeats(stop: threading.Event, threads: list[threading.Thread]) -> None:
+    stop.set()
+    for thread in threads:
+        thread.join(timeout=2.5)
+
+
+def _run_local_crew_round(
+    agent: AgentSession,
+    configs: list[dict[str, Any]],
+    round_data: dict[str, Any],
+    deadline: float,
+) -> bool:
+    """Run the five independent assessments locally, then one director job."""
+    remaining = deadline - time.monotonic()
+    camera_phase_s = min(20.0, remaining - 7.0)
+    if camera_phase_s < 4.0:
+        return False
+    inference_timeout_s = max(1.0, camera_phase_s - 3.25)
+    task = {"round": round_data, "model_timeout_s": inference_timeout_s}
+    camera_configs = [item for item in configs if item["role"] == "camera"]
+    critic_config = next((item for item in configs if item["role"] == "critic"), None)
+    director_config = next((item for item in configs if item["role"] == "director"), None)
+    if len(camera_configs) != len(CAMERA_IDS) or critic_config is None or director_config is None:
+        _log("local_crew_configuration_invalid")
+        return False
+
+    jobs = {
+        f"camera:{item['camera_id']}": (item, _camera_job)
+        for item in camera_configs
+    }
+    jobs["critic"] = (critic_config, _critic_job)
+    reports: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=5, thread_name_prefix="noesis-local-role") as pool:
+        futures = {
+            pool.submit(job, config, {**task, "role": key}): key
+            for key, (config, job) in jobs.items()
+        }
+        done, pending = wait(futures, timeout=max(0.0, camera_phase_s))
+        if pending:
+            _log("local_crew_assessment_timeout", pending=len(pending))
+        for future in done:
+            role_key = futures[future]
+            try:
+                result = future.result()
+            except AgentTaskError as exc:
+                _log("local_crew_assessment_failed", role=role_key, error_code=exc.code)
+                continue
+            except Exception as exc:
+                _log("local_crew_assessment_failed", role=role_key, error_code=f"agent_{type(exc).__name__}")
+                continue
+            if result.get("ok") is not True or not isinstance(result.get("report"), dict):
+                continue
+            report = result["report"]
+            expected_role, camera_id = ("camera", role_key.split(":", 1)[1]) if role_key.startswith("camera:") else ("critic", None)
+            if _relayed_report_matches(report, round_data, role=expected_role, camera_id=camera_id):
+                reports[role_key] = report
+    if any(f"camera:{camera_id}" not in reports for camera_id in CAMERA_IDS) or "critic" not in reports:
+        _log("local_crew_incomplete_evidence", request_id=round_data.get("request_id"), reports=len(reports))
+        return False
+    response_ids = [reports[f"camera:{camera_id}"].get("response_id") for camera_id in CAMERA_IDS]
+    response_ids.append(reports["critic"].get("response_id"))
+    if len(set(response_ids)) != len(response_ids):
+        _log("local_crew_duplicate_response_ids", request_id=round_data.get("request_id"))
+        return False
+
+    director_budget = deadline - time.monotonic()
+    if director_budget < 6.0:
+        _log("local_crew_director_deadline", request_id=round_data.get("request_id"))
+        return False
+    report_list = [reports[f"camera:{camera_id}"] for camera_id in CAMERA_IDS] + [reports["critic"]]
+    director_task = {
+        "round": round_data,
+        "camera_reports": report_list[:-1],
+        "critic_report": report_list[-1],
+        "model_timeout_s": max(1.0, min(MODEL_TIMEOUT_S, director_budget - 5.0)),
+    }
+    try:
+        outcome = _director_job(director_config, director_task)
+    except AgentTaskError as exc:
+        _log("local_crew_director_failed", request_id=round_data.get("request_id"), error_code=exc.code)
+        return False
+    except Exception as exc:
+        _log("local_crew_director_failed", request_id=round_data.get("request_id"), error_code=f"agent_{type(exc).__name__}")
+        return False
+    if outcome.get("ok") is True:
+        _emit(agent, "noesis.director_decision", request_id=round_data.get("request_id"),
+              response_id=outcome.get("decision", {}).get("response_id"))
+        return True
+    return False
+
+
+def _local_crew(agent: AgentSession, context: Context, prompt: dict[str, Any]) -> None:
+    try:
+        _local_crew_task(agent, context, prompt)
+    except AgentTaskError as exc:
+        _emit(agent, "noesis.local_crew_error", error_code=exc.code)
+        _log("local_crew_error", error_code=exc.code)
+
+
+def _local_crew_task(agent: AgentSession, context: Context, prompt: dict[str, Any]) -> None:
+    controller_url = _controller_url({"controller_url": prompt.get("controller_url", DEFAULT_CONTROLLER_URL)})
+    duration = prompt.get("duration_s", 3600)
+    if not _finite(duration):
+        duration = 3600
+    duration = min(43200.0, max(5.0, float(duration)))
+    run_id = str(getattr(context, "run_id", "local-crew"))
+    configs = _local_crew_configs(controller_url)
+    stop, threads = _start_local_heartbeats(agent, run_id, configs)
+    deadline = time.monotonic() + duration
+    processed: list[str] = []
+    _emit(agent, "noesis.local_crew_started", duration_s=duration, role_count=len(configs))
+    _log("local_crew_started", run_id=run_id, duration_s=duration, role_count=len(configs), runtime=LOCAL_RUNTIME)
+    try:
+        while time.monotonic() < deadline:
+            poll_started = time.monotonic()
+            try:
+                current = _http_json(controller_url, "/api/ai/round", timeout_s=min(2.0, max(0.1, deadline - time.monotonic())))
+            except AgentTaskError as exc:
+                _emit(agent, "noesis.local_round_poll_error", error_code=exc.code)
+                time.sleep(min(POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
+                continue
+            if not isinstance(current, dict):
+                time.sleep(min(POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
+                continue
+            request_id = current.get("request_id")
+            if not isinstance(request_id, str) or not request_id or request_id in processed:
+                time.sleep(min(POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
+                continue
+            remaining_ms = current.get("deadline_remaining_ms")
+            if not _finite(remaining_ms):
+                processed.append(request_id)
+                continue
+            remaining_s = max(0.0, float(remaining_ms) / 1000.0 - (time.monotonic() - poll_started))
+            if remaining_s < 12.0:
+                processed.append(request_id)
+                continue
+            try:
+                _identity(current)
+                _model_from_round(current)
+                round_deadline = min(deadline, time.monotonic() + remaining_s)
+                _run_local_crew_round(agent, configs, current, round_deadline)
+            except AgentTaskError as exc:
+                _emit(agent, "noesis.local_round_skipped", request_id=request_id, error_code=exc.code)
+                _log("local_round_skipped", request_id=request_id, error_code=exc.code)
+            processed.append(request_id)
+            if len(processed) > 256:
+                del processed[:-128]
+    finally:
+        _stop_heartbeats(stop, threads)
+        _emit(agent, "noesis.local_crew_stopped", run_id=run_id)
+        _log("local_crew_stopped", run_id=run_id)
+
+
 def _coordinator(agent: AgentSession, context: Context, prompt: dict[str, Any]) -> None:
     try:
         _coordinator_task(agent, context, prompt)
@@ -840,8 +1068,11 @@ app = AgentApp()
 
 @app.main()
 def main(agent: AgentSession, context: Context) -> None:
-    """Run one SuperGrid coordinator task or reply to one trusted SuperNode task."""
+    """Run local crew mode, a SuperGrid coordinator task, or a trusted worker task."""
     prompt = _prompt_data(agent)
+    if prompt.get("mode") == "local_crew":
+        _local_crew(agent, context, prompt)
+        return
     envelope = prompt if {"message_id", "src_node_id", "payload"}.issubset(prompt) else None
     if envelope is not None:
         _worker_main(agent, context, envelope)

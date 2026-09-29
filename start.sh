@@ -15,22 +15,31 @@ echo "Noesis control room: http://127.0.0.1:8765"
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   cat <<'EOF'
-Usage: ./start.sh [--PreviewOnly] [--OBS]
+Usage: ./start.sh [--PreviewOnly] [--OBS] [--runtime local|supergrid] [--model-profile kimi|minimax]
 
-  --PreviewOnly  Start only the dashboard with deterministic fallback.
+  --PreviewOnly  Start only the dashboard (no AI crew).
   --OBS          Request OBS integration (requires a reachable OBS WebSocket).
+  --runtime      Agent orchestration location (default: local).
+  --model-profile  Nebius model profile (default: kimi).
 EOF
   exit 0
 fi
 
 PREVIEW_ONLY=false
 OBS=false
-for arg in "$@"; do
-  case "$arg" in
-    --PreviewOnly) PREVIEW_ONLY=true ;;
-    --OBS) OBS=true ;;
-    *) echo "Unknown option: $arg" >&2; exit 2 ;;
+RUNTIME=local
+MODEL_PROFILE=kimi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --PreviewOnly|--preview-only) PREVIEW_ONLY=true ;;
+    --OBS|--obs) OBS=true ;;
+    --runtime|--model-profile)
+      if [[ $# -lt 2 ]]; then echo "Missing value for $1" >&2; exit 2; fi
+      if [[ "$1" == --runtime ]]; then RUNTIME="$2"; else MODEL_PROFILE="$2"; fi
+      shift ;;
+    *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
+  shift
 done
 
 if [[ "$PREVIEW_ONLY" == true ]]; then
@@ -53,7 +62,7 @@ EOF
   fi
 fi
 
-ARGS=(scripts/run_demo.py)
+ARGS=(scripts/run_demo.py --runtime "$RUNTIME" --model-profile "$MODEL_PROFILE")
 if [[ "$OBS" == true ]]; then
   ARGS+=(--obs)
 fi

@@ -131,6 +131,7 @@ def serve(args) -> None:
     env["UV_CACHE_DIR"] = str(ROOT / ".runtime" / "uv-cache")
     env["FLWR_SUPEREXEC_TASK_POLL_INTERVAL"] = "0.1"
     env["NOESIS_GRID_RUN_FILE"] = str(RUN_FILE)
+    env["NOESIS_RUNTIME_DEPLOYMENT"] = "supergrid"
     token_path = RUNTIME / "gateway-token"
     if not token_path.exists():
         token_path.write_text(secrets.token_hex(32), encoding="ascii")

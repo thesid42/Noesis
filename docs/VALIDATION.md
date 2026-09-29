@@ -2,12 +2,31 @@
 
 Evidence updated 29 September 2026. Generated reports, recordings, keys, and run manifests stay in ignored local paths.
 
-## Current checks
+## Current local Flower checks
+
+The default launcher now runs six AI roles in one native local Flower AgentApp, using remote Nebius Kimi inference. Verified local run `10720407148437064032` returned accepted real model responses from all six roles. There is no hosted queue or Grid dispatch in this mode.
+
+| Check | Observed result |
+|---|---|
+| Regression suite | **51 passed**, including parallel role execution, incomplete-evidence rejection, HTTP/model wall-time cancellation, credential routing, and deployment reporting. |
+| Synthetic Kimi round | All six accepted responses and an actual camera cut in **11.469 seconds** from replay start; director inference took 2.718 seconds. |
+| Source health recovery | **985 ms** in the synthetic check. |
+| Manual override | Passed. |
+| Short AMI Kimi round | All six roles responded; first director response observed at **12.266 seconds**. **One AI camera cut** before EOF at 19.933 seconds. |
+| AMI audio | `audio/wav` range request succeeded with HTTP 206. Previous browser audibility and OBS audio-recording measurements remain below; those were not remeasured in this local preview test. |
+| MiniMax | Not run, per user request. Optional UI profile remains supported. |
+| Static checks | Python compilation, JavaScript syntax, Bash syntax, and Git whitespace checks passed. |
+
+These are individual test timings, not a latency guarantee. The earlier successful hosted round took about 23 seconds. Raw video/audio is still processed locally into measured features; the models receive those features rather than raw media or transcripts.
+
+Non-secret live reports are saved locally in `.runtime/local/kimi-acceptance.json` and `.runtime/local/ami-acceptance.json`. To repeat the synthetic acceptance test with the local launcher running, use `scripts/verify_nebius.py --profile kimi --preview-only`; it replaces the current replay and uses model credits.
+
+## Historical hosted SuperGrid checks
 
 | Check | Observed result |
 |---|---|
 | Regression suite | **42 passed**. |
-| Authenticated federation | All six registered Noesis SuperNodes are online in `@thesid42/noesis`. |
+| Authenticated federation | All six registered Noesis SuperNodes were online during the hosted proof in `@thesid42/noesis`. |
 | Kimi SuperGrid inference | **Passed.** Cloud coordinator run `96528684490097715` finished `completed` in 245.545 s and produced accepted responses from all six AI roles; the Director selected Closeup3. The run stayed within the five-minute event limit. Safe role provenance is in `.runtime/supergrid/kimi-acceptance.json` and `.runtime/supergrid/run-history.json`. |
 | Kimi round timing | The first 30-second round expired. A later round completed in about 23 seconds; individual Kimi model calls took 4.3–7.0 seconds. |
 | Health and manual guards | The Kimi rehearsal recovered from a source fault in 984 ms and passed the manual override check. |

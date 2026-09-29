@@ -1,7 +1,8 @@
 param(
     [switch]$PreviewOnly,
     [switch]$OBS,
-    [ValidateSet('kimi', 'minimax')][string]$ModelProfile = 'kimi'
+    [ValidateSet('kimi', 'minimax')][string]$ModelProfile = 'kimi',
+    [ValidateSet('local', 'supergrid')][string]$Runtime = 'local'
 )
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
@@ -15,7 +16,7 @@ Write-Host 'Noesis control room: http://127.0.0.1:8765'
 if ($PreviewOnly) {
     & $directorPython -m noesis
 } else {
-    $directorArgs = @('scripts/run_demo.py')
+    $directorArgs = @('scripts/run_demo.py', '--runtime', $Runtime)
     if ($OBS) { $directorArgs += '--obs' }
     if ($ModelProfile) { $directorArgs += @('--model-profile', $ModelProfile) }
     & $directorPython @directorArgs

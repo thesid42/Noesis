@@ -78,8 +78,9 @@ def load_provider_targets(environ: Mapping[str, str] | None = None) -> dict[str,
         endpoint = str(values.get(endpoint_name, "")).strip()
         model = str(values.get(model_name, "")).strip()
         key = str(values.get(key_name, "")).strip()
-        # An entirely unconfigured profile is omitted; partial profiles fail closed.
-        if not any((endpoint, model, key)):
+        # A profile without credentials is unavailable, even when its model and
+        # endpoint placeholders are present. Keyed but invalid profiles fail closed.
+        if not key:
             continue
         if not endpoint or not model or not key:
             raise ValueError(f"{profile} profile is incomplete; configure {endpoint_name}, {model_name}, and {key_name}.")
