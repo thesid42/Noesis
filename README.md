@@ -25,6 +25,14 @@ Copy-Item .env.example .env  # skip if .env already exists
 
 The launcher starts the local Flower runtime, Noesis model gateway, and control room. Keep the terminal open; Ctrl+C stops services owned by the launcher. Omit `-OBS` to use preview output instead of OBS. On macOS/Linux, use `./start.sh --obs` or `./start.sh`.
 
+Local runs use persistent inference connections by default. The equivalent Python launch command is:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_demo.py --obs
+```
+
+The Flower AgentApp shares one persistent client across all six roles and sends model requests directly to the authenticated local gateway, bypassing Flower's per-request model subprocess. Use `--inference-transport flower` to select the original path. Hosted SuperGrid continues to use Flower model tasks. See [latency measurements](docs/PERFORMANCE.md).
+
 To opt into the hosted SuperGrid path, first configure Flower's authenticated connection and register the six SuperNodes, then launch explicitly:
 
 ```powershell

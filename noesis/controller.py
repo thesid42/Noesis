@@ -439,15 +439,18 @@ class DirectorController(AIControlMixin):
         if run_file:
             try:
                 managed = json.loads(Path(run_file).read_text(encoding="utf-8"))
-                self._grid_run = {key: managed[key] for key in ("run_id", "federation", "status", "sub_status", "checked_at", "deployment") if key in managed}
+                self._grid_run = {key: managed[key] for key in ("run_id", "federation", "status", "sub_status", "checked_at", "deployment", "inference_transport") if key in managed}
             except (OSError, ValueError, TypeError):
                 self._grid_run = {}
         deployment = os.getenv("NOESIS_RUNTIME_DEPLOYMENT", "local")
         deployment = "supergrid" if deployment == "supergrid" else "local"
+        inference_transport = "gateway" if deployment == "local" and os.getenv("NOESIS_INFERENCE_TRANSPORT") == "gateway" else "flower"
         return {
             "status": status,
-            "transport": ("Flower local AgentApp; Nebius inference" if deployment == "local"
+            "transport": (("Flower local AgentApp; persistent gateway to Nebius" if inference_transport == "gateway"
+                           else "Flower local AgentApp; Flower model tasks to Nebius") if deployment == "local"
                           else "Flower SuperGrid native Grid; local media bridge"),
+            "inference_transport": inference_transport,
             **({"model": self.model_name} if self.model_name else {}),
             "model_status": "verified" if self._last_model_result else "configured_not_verified" if self.model_name else "not_configured",
             "topology": deployment,

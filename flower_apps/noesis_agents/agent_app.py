@@ -8,8 +8,8 @@ import math
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, wait
-from typing import Any
+from concurrent.futures import ThreadPoolExecutor, wait, TimeoutError as FutureTimeoutError
+from typing import Any, Callable
 from urllib.parse import urlsplit
 import uuid
 
@@ -29,6 +29,10 @@ from noesis_agents.policy import (
 RUNTIME = "Flower SuperGrid AgentApp/1.39"
 LOCAL_RUNTIME = "Flower local AgentApp/1.39"
 DEFAULT_CONTROLLER_URL = "http://127.0.0.1:8765"
+GATEWAY_INFERENCE_URL = "http://127.0.0.1:8770/v1"
+INFERENCE_TRANSPORT_ENV = "NOESIS_INFERENCE_TRANSPORT"
+RUNTIME_DEPLOYMENT_ENV = "NOESIS_RUNTIME_DEPLOYMENT"
+AGENT_GATEWAY_TOKEN_ENV = "NOESIS_AGENT_GATEWAY_TOKEN"
 HEARTBEAT_INTERVAL_S = 2.0
 MODEL_TIMEOUT_S = 25.0
 ROUND_TIMEOUT_S = 28.0
@@ -292,28 +296,189 @@ async def _async_model_response(
     from openai import AsyncOpenAI
 
     async with AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout_s, max_retries=0) as client:
-        return await client.responses.create(
-            model=model,
-            instructions=instructions,
-            input=json.dumps(data, separators=(",", ":"), allow_nan=False),
-            text={"format": {"type": "json_schema", "name": schema_name, "schema": schema, "strict": True}},
-            max_output_tokens=320,
-        )
+        return await client.responses.create(**_model_request_args(model, instructions, data, schema_name, schema))
 
 
-def _infer(model: str, instructions: str, data: dict[str, Any], schema_name: str, schema: dict[str, Any], *, timeout_s: float = MODEL_TIMEOUT_S) -> dict[str, Any]:
-    base_url = os.environ.get("FLWR_RUNTIME_BASE_URL")
-    api_key = os.environ.get("FLWR_RUNTIME_API_KEY")
-    if not isinstance(base_url, str) or not base_url or not isinstance(api_key, str) or not api_key:
-        raise AgentTaskError("flower_model_runtime_unavailable")
-    started = time.monotonic()
-    wall_timeout = _wall_timeout(timeout_s, default=MODEL_TIMEOUT_S, maximum=MODEL_TIMEOUT_S)
+def _model_request_args(model: str, instructions: str, data: dict[str, Any], schema_name: str, schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "model": model,
+        "instructions": instructions,
+        "input": json.dumps(data, separators=(",", ":"), allow_nan=False),
+        "text": {"format": {"type": "json_schema", "name": schema_name, "schema": schema, "strict": True}},
+        "max_output_tokens": 320,
+    }
+
+
+async def _make_gateway_openai_client(api_key: str) -> Any:
+    """Create the one loop-owned, proxy-free client for the fixed local gateway."""
+    from openai import AsyncOpenAI
+
+    http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(MODEL_TIMEOUT_S),
+        trust_env=False,
+        limits=httpx.Limits(max_connections=6, max_keepalive_connections=6, keepalive_expiry=60.0),
+    )
     try:
-        response = asyncio.run(asyncio.wait_for(
-            _async_model_response(base_url, api_key, model, instructions, data, schema_name, schema, wall_timeout),
-            timeout=wall_timeout,
-        ))
+        return AsyncOpenAI(
+            base_url=GATEWAY_INFERENCE_URL,
+            api_key=api_key,
+            timeout=MODEL_TIMEOUT_S,
+            max_retries=0,
+            http_client=http_client,
+        )
+    except Exception:
+        await http_client.aclose()
+        raise
+
+
+class _PersistentInferenceClient:
+    """One cancellable AsyncOpenAI session owned by a dedicated event-loop thread."""
+
+    def __init__(self, api_key: str, *, client_factory: Callable[[str], Any] | None = None) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._serve_loop, name="noesis-inference-loop", daemon=True)
+        self._lifecycle_lock = threading.Lock()
+        self._client: Any | None = None
+        self._closed = False
+        self._client_factory = client_factory or _make_gateway_openai_client
+        self._init_future: Any | None = None
+        self._thread.start()
+        if not self._ready.wait(timeout=2.0):
+            self.close()
+            raise AgentTaskError("gateway_client_loop_start_timeout")
+        try:
+            self._init_future = asyncio.run_coroutine_threadsafe(self._initialize(api_key), self._loop)
+            self._init_future.result(timeout=5.0)
+        except FutureTimeoutError:
+            if self._init_future is not None:
+                self._init_future.cancel()
+            self.close()
+            raise AgentTaskError("gateway_client_start_timeout") from None
+        except Exception as exc:
+            self.close()
+            raise AgentTaskError(f"gateway_client_start_{type(exc).__name__}") from None
+
+    async def _initialize(self, api_key: str) -> None:
+        # Assignment occurs on the owning loop, so shutdown always sees a client
+        # even if the caller's bounded startup wait expires concurrently.
+        self._client = await self._client_factory(api_key)
+
+    def _serve_loop(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._ready.set()
+        self._loop.run_forever()
+        pending = asyncio.all_tasks(self._loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        self._loop.run_until_complete(self._loop.shutdown_asyncgens())
+        self._loop.close()
+
+    async def _request(self, args: dict[str, Any], timeout_s: float) -> Any:
+        if self._client is None:
+            raise RuntimeError("Inference client is not initialized.")
+        return await asyncio.wait_for(self._client.responses.create(**args), timeout=timeout_s)
+
+    async def _shutdown(self) -> None:
+        current = asyncio.current_task()
+        pending = [task for task in asyncio.all_tasks(self._loop) if task is not current]
+        for task in pending:
+            task.cancel()
+        if pending:
+            try:
+                await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=1.5)
+            except TimeoutError:
+                pass
+        client = self._client
+        self._client = None
+        if client is not None:
+            await asyncio.wait_for(client.close(), timeout=1.5)
+
+    def create_response(
+        self,
+        *,
+        model: str,
+        instructions: str,
+        data: dict[str, Any],
+        schema_name: str,
+        schema: dict[str, Any],
+        timeout_s: float,
+    ) -> Any:
+        timeout = _wall_timeout(timeout_s, default=MODEL_TIMEOUT_S, maximum=MODEL_TIMEOUT_S)
+        args = _model_request_args(model, instructions, data, schema_name, schema)
+        with self._lifecycle_lock:
+            if self._closed or self._client is None:
+                raise RuntimeError("Inference client is closed.")
+            future = asyncio.run_coroutine_threadsafe(self._request(args, timeout), self._loop)
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError:
+            future.cancel()
+            raise TimeoutError("Inference request exceeded its wall-time budget.") from None
+
+    def close(self) -> None:
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._closed = True
+        try:
+            if self._thread.is_alive():
+                closing = asyncio.run_coroutine_threadsafe(self._shutdown(), self._loop)
+                try:
+                    closing.result(timeout=3.5)
+                except FutureTimeoutError:
+                    closing.cancel()
+        finally:
+            if self._thread.is_alive():
+                self._loop.call_soon_threadsafe(self._loop.stop)
+                self._thread.join(timeout=3.0)
+                if self._thread.is_alive():
+                    raise AgentTaskError("gateway_client_shutdown_timeout")
+
+
+def _infer(
+    model: str,
+    instructions: str,
+    data: dict[str, Any],
+    schema_name: str,
+    schema: dict[str, Any],
+    *,
+    timeout_s: float = MODEL_TIMEOUT_S,
+    persistent_client: _PersistentInferenceClient | None = None,
+) -> dict[str, Any]:
+    transport = os.environ.get(INFERENCE_TRANSPORT_ENV, "flower").strip().lower()
+    wall_timeout = _wall_timeout(timeout_s, default=MODEL_TIMEOUT_S, maximum=MODEL_TIMEOUT_S)
+    if transport not in {"flower", "gateway"}:
+        raise AgentTaskError("inference_transport_invalid")
+    started = time.monotonic()
+    try:
+        if transport == "gateway":
+            if os.environ.get(RUNTIME_DEPLOYMENT_ENV) != "local":
+                raise AgentTaskError("gateway_transport_requires_local_deployment")
+            if not os.environ.get(AGENT_GATEWAY_TOKEN_ENV):
+                raise AgentTaskError("gateway_transport_token_unavailable")
+            if persistent_client is None:
+                raise AgentTaskError("gateway_persistent_client_unavailable")
+            response = persistent_client.create_response(
+                model=model, instructions=instructions, data=data, schema_name=schema_name,
+                schema=schema, timeout_s=wall_timeout,
+            )
+        else:
+            if persistent_client is not None:
+                raise AgentTaskError("unexpected_persistent_flower_client")
+            base_url = os.environ.get("FLWR_RUNTIME_BASE_URL")
+            api_key = os.environ.get("FLWR_RUNTIME_API_KEY")
+            if not isinstance(base_url, str) or not base_url or not isinstance(api_key, str) or not api_key:
+                raise AgentTaskError("flower_model_runtime_unavailable")
+            response = asyncio.run(asyncio.wait_for(
+                _async_model_response(base_url, api_key, model, instructions, data, schema_name, schema, wall_timeout),
+                timeout=wall_timeout,
+            ))
     except Exception as exc:
+        if isinstance(exc, AgentTaskError):
+            raise
         # Model SDK exceptions can embed request/response bodies; report only type.
         raise AgentTaskError(f"model_request_{type(exc).__name__}") from None
     latency_ms = max(0, round((time.monotonic() - started) * 1000))
@@ -394,6 +559,17 @@ def _task_model_timeout(task: dict[str, Any]) -> float:
     return max(1.0, min(MODEL_TIMEOUT_S, float(timeout)))
 
 
+def _infer_task(
+    task: dict[str, Any], model: str, instructions: str, data: dict[str, Any],
+    schema_name: str, schema: dict[str, Any],
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"timeout_s": _task_model_timeout(task)}
+    persistent_client = task.get("_persistent_inference_client")
+    if persistent_client is not None:
+        kwargs["persistent_client"] = persistent_client
+    return _infer(model, instructions, data, schema_name, schema, **kwargs)
+
+
 def _camera_job(config: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
     round_data = task.get("round")
     if not isinstance(round_data, dict):
@@ -420,7 +596,8 @@ def _camera_job(config: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
             "source_time_s": camera.get("source_time_s") if _finite(camera.get("source_time_s")) else None,
         },
     }
-    inference = _infer(
+    inference = _infer_task(
+        task,
         _model_from_round(round_data),
         "Assess only this camera's measured health, speaker activity, energy, quality, and age. "
         "You have no raw video, audio, transcript, or semantic scene access. Never claim what a person said, "
@@ -436,7 +613,6 @@ def _camera_job(config: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
             },
             "required": ["recommendation", "confidence", "reason"],
         },
-        timeout_s=_task_model_timeout(task),
     )
     inference["result"] = parse_camera_result(inference["result"])
     report = _report(config, round_data, "camera", inference)
@@ -451,7 +627,8 @@ def _critic_job(config: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
         "round": safe_round_input(round_data),
         "prior_ai_reports": safe_round_input({**round_data, "previous_reports": round_data.get("previous_reports", [])})["previous_reports"],
     }
-    inference = _infer(
+    inference = _infer_task(
+        task,
         _model_from_round(round_data),
         "Act as a skeptical editorial critic. Assess whether the measured camera and speaker signals support "
         "staying steady, changing the current shot, or using the wide view. No raw audio/video is provided; "
@@ -466,7 +643,6 @@ def _critic_job(config: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
             },
             "required": ["assessment", "reason"],
         },
-        timeout_s=_task_model_timeout(task),
     )
     inference["result"] = parse_critic_result(inference["result"])
     report = _report(config, round_data, "critic", inference)
@@ -529,7 +705,8 @@ def _director_job(config: dict[str, Any], task: dict[str, Any]) -> dict[str, Any
         "camera_reports": [{"camera_id": item.get("camera_id"), "result": item.get("result")} for item in camera_reports],
         "critic_report": critic_report.get("result"),
     }
-    inference = _infer(
+    inference = _infer_task(
+        task,
         _model_from_round(round_data),
         "You are the final Noesis Director. Use the current round, fresh source snapshot, four camera AI "
         "recommendations, and critic assessment to choose hold or switch. Do not apply a fixed rule or infer "
@@ -547,7 +724,6 @@ def _director_job(config: dict[str, Any], task: dict[str, Any]) -> dict[str, Any
             },
             "required": ["action", "camera_id", "reason"],
         },
-        timeout_s=_task_model_timeout(task),
     )
     result = parse_director_result(inference["result"])
     healthy = {item.get("id") for item in current_cameras if isinstance(item, dict) and item.get("healthy") is True}
@@ -913,6 +1089,8 @@ def _run_local_crew_round(
     configs: list[dict[str, Any]],
     round_data: dict[str, Any],
     deadline: float,
+    *,
+    persistent_client: _PersistentInferenceClient | None = None,
 ) -> bool:
     """Run the five independent assessments locally, then one director job."""
     remaining = deadline - time.monotonic()
@@ -921,6 +1099,8 @@ def _run_local_crew_round(
         return False
     inference_timeout_s = max(1.0, camera_phase_s - 3.25)
     task = {"round": round_data, "model_timeout_s": inference_timeout_s}
+    if persistent_client is not None:
+        task["_persistent_inference_client"] = persistent_client
     camera_configs = [item for item in configs if item["role"] == "camera"]
     critic_config = next((item for item in configs if item["role"] == "critic"), None)
     director_config = next((item for item in configs if item["role"] == "director"), None)
@@ -978,6 +1158,8 @@ def _run_local_crew_round(
         "critic_report": report_list[-1],
         "model_timeout_s": max(1.0, min(MODEL_TIMEOUT_S, director_budget - 5.0)),
     }
+    if persistent_client is not None:
+        director_task["_persistent_inference_client"] = persistent_client
     try:
         outcome = _director_job(director_config, director_task)
     except AgentTaskError as exc:
@@ -1001,6 +1183,26 @@ def _local_crew(agent: AgentSession, context: Context, prompt: dict[str, Any]) -
         _log("local_crew_error", error_code=exc.code)
 
 
+def _local_inference_client_from_env() -> _PersistentInferenceClient | None:
+    transport = os.environ.get(INFERENCE_TRANSPORT_ENV, "flower").strip().lower()
+    if transport == "flower":
+        return None
+    if transport != "gateway":
+        raise AgentTaskError("inference_transport_invalid")
+    if os.environ.get(RUNTIME_DEPLOYMENT_ENV) != "local":
+        raise AgentTaskError("gateway_transport_requires_local_deployment")
+    token = os.environ.get(AGENT_GATEWAY_TOKEN_ENV)
+    if not isinstance(token, str) or not token:
+        raise AgentTaskError("gateway_transport_token_unavailable")
+    try:
+        return _PersistentInferenceClient(token)
+    except AgentTaskError:
+        raise
+    except Exception as exc:
+        # Factory errors may contain request details; expose only their type.
+        raise AgentTaskError(f"gateway_client_start_{type(exc).__name__}") from None
+
+
 def _local_crew_task(agent: AgentSession, context: Context, prompt: dict[str, Any]) -> None:
     controller_url = _controller_url({"controller_url": prompt.get("controller_url", DEFAULT_CONTROLLER_URL)})
     duration = prompt.get("duration_s", 3600)
@@ -1009,12 +1211,16 @@ def _local_crew_task(agent: AgentSession, context: Context, prompt: dict[str, An
     duration = min(43200.0, max(5.0, float(duration)))
     run_id = str(getattr(context, "run_id", "local-crew"))
     configs = _local_crew_configs(controller_url)
-    stop, threads = _start_local_heartbeats(agent, run_id, configs)
+    inference_client = _local_inference_client_from_env()
+    stop: threading.Event | None = None
+    threads: list[threading.Thread] = []
     deadline = time.monotonic() + duration
     processed: list[str] = []
-    _emit(agent, "noesis.local_crew_started", duration_s=duration, role_count=len(configs))
-    _log("local_crew_started", run_id=run_id, duration_s=duration, role_count=len(configs), runtime=LOCAL_RUNTIME)
     try:
+        stop, threads = _start_local_heartbeats(agent, run_id, configs)
+        _emit(agent, "noesis.local_crew_started", duration_s=duration, role_count=len(configs))
+        _log("local_crew_started", run_id=run_id, duration_s=duration, role_count=len(configs), runtime=LOCAL_RUNTIME,
+             inference_transport=os.environ.get(INFERENCE_TRANSPORT_ENV, "flower").strip().lower())
         while time.monotonic() < deadline:
             poll_started = time.monotonic()
             try:
@@ -1042,7 +1248,7 @@ def _local_crew_task(agent: AgentSession, context: Context, prompt: dict[str, An
                 _identity(current)
                 _model_from_round(current)
                 round_deadline = min(deadline, time.monotonic() + remaining_s)
-                _run_local_crew_round(agent, configs, current, round_deadline)
+                _run_local_crew_round(agent, configs, current, round_deadline, persistent_client=inference_client)
             except AgentTaskError as exc:
                 _emit(agent, "noesis.local_round_skipped", request_id=request_id, error_code=exc.code)
                 _log("local_round_skipped", request_id=request_id, error_code=exc.code)
@@ -1050,7 +1256,14 @@ def _local_crew_task(agent: AgentSession, context: Context, prompt: dict[str, An
             if len(processed) > 256:
                 del processed[:-128]
     finally:
-        _stop_heartbeats(stop, threads)
+        if stop is not None:
+            _stop_heartbeats(stop, threads)
+        if inference_client is not None:
+            try:
+                inference_client.close()
+            except AgentTaskError as exc:
+                _emit(agent, "noesis.local_inference_shutdown_error", error_code=exc.code)
+                _log("local_inference_shutdown_error", error_code=exc.code)
         _emit(agent, "noesis.local_crew_stopped", run_id=run_id)
         _log("local_crew_stopped", run_id=run_id)
 

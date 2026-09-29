@@ -24,19 +24,22 @@ STOP_FILE = RUNTIME / "stop-request"
 API_URL = "http://127.0.0.1:8000"
 
 
-def environments(source: dict[str, str], profile_name: str) -> tuple[dict, dict, dict]:
+def environments(source: dict[str, str], profile_name: str, inference_transport: str = "gateway") -> tuple[dict, dict, dict]:
     """Only the loopback gateway receives Nebius provider keys."""
+    if inference_transport not in {"flower", "gateway"}:
+        raise ValueError("Inference transport must be flower or gateway.")
     targets = load_provider_targets(source)
     profile = load_model_profile(profile_name, source)
     if not any(item.profile == profile_name for item in targets.values()):
         raise ValueError(f"Configure the {profile_name} Nebius profile before starting.")
     env = launcher_environment(source, profile)
     for key in tuple(env):
-        if key.startswith(("FLWR_RUNTIME_", "NOESIS_GATEWAY_")):
+        if key.startswith(("FLWR_RUNTIME_", "NOESIS_GATEWAY_", "NOESIS_AGENT_GATEWAY_")):
             env.pop(key, None)
     env.update(
         NOESIS_MODEL_CATALOG_JSON=model_catalog_json(targets),
         NOESIS_RUNTIME_DEPLOYMENT="local",
+        NOESIS_INFERENCE_TRANSPORT=inference_transport,
         NOESIS_GRID_RUN_FILE=str(RUN_FILE),
         NOESIS_HOST="127.0.0.1", NOESIS_PORT="8765", PYTHONUTF8="1",
         FLWR_HOME=str(RUNTIME / "flower-home"),
@@ -48,6 +51,8 @@ def environments(source: dict[str, str], profile_name: str) -> tuple[dict, dict,
     gateway = {**env, "NOESIS_GATEWAY_TOKEN": token}
     gateway.update({key: value for key, value in source.items() if key.startswith(("NEBIUS_KIMI_", "NEBIUS_MINIMAX_"))})
     superlink = {**env, "FLWR_MODEL_API_ENDPOINT": "http://127.0.0.1:8770/v1/responses", "FLWR_MODEL_API_KEY": token}
+    if inference_transport == "gateway":
+        superlink["NOESIS_AGENT_GATEWAY_TOKEN"] = token
     superlink.pop("OBS_PASSWORD", None)
     return env, gateway, superlink
 
@@ -66,14 +71,18 @@ def serve(args) -> None:
     STOP_FILE.unlink(missing_ok=True)
     source = {key: value for key, value in dotenv_values(ROOT / ".env").items() if value is not None}
     source.update(os.environ)
-    env, gateway_env, superlink_env = environments(source, args.model_profile)
+    inference_transport = getattr(args, "inference_transport", None) or "gateway"
+    env, gateway_env, superlink_env = environments(source, args.model_profile, inference_transport)
+    if getattr(args, "trace_inference", False):
+        gateway_env["NOESIS_GATEWAY_TIMING_LOG_PATH"] = str(RUNTIME / "gateway-timings.jsonl")
     processes: list[tuple[str, subprocess.Popen]] = []
     streams = []
     control = ControlHttpClient(API_URL, timeout=5.0)
     run_id = None
     app_started = False
     final_status = "stopped"
-    metadata = {"deployment": "local", "status": "starting", "sub_status": "", "checked_at": time.time()}
+    metadata = {"deployment": "local", "inference_transport": inference_transport,
+                "status": "starting", "sub_status": "", "checked_at": time.time()}
     write(RUN_FILE, metadata)
 
     def spawn(command, name, child_env, cwd=ROOT):
@@ -134,6 +143,7 @@ def serve(args) -> None:
         metadata.update(run_id=run_id, status="pending", checked_at=time.time())
         write(RUN_FILE, metadata)
         print(f"Local Flower run {run_id}: six AI roles, Nebius {args.model_profile} inference.", flush=True)
+        print(f"Inference transport: {inference_transport}.", flush=True)
         print("Noesis: http://127.0.0.1:8765 - Ctrl+C stops owned services.", flush=True)
         deadline = time.monotonic() + args.agent_budget_s + 60
         startup_deadline = time.monotonic() + 60
@@ -202,6 +212,9 @@ def main():
     parser.add_argument("--obs", action="store_true")
     parser.add_argument("--model-profile", choices=("kimi", "minimax"), default="kimi")
     parser.add_argument("--duration-s", "--agent-budget-s", dest="agent_budget_s", type=int, default=3600)
+    parser.add_argument("--trace-inference", action="store_true", help="Record private, payload-free inference timings.")
+    parser.add_argument("--inference-transport", choices=("flower", "gateway"), default="gateway",
+                        help="Use persistent gateway connections (default), or opt into Flower model tasks.")
     args = parser.parse_args()
     if args.command == "status":
         print(json.dumps(read(RUN_FILE, {}), indent=2))

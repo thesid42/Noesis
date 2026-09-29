@@ -2,6 +2,10 @@
 
 Evidence updated 29 September 2026. Generated reports, recordings, keys, and run manifests stay in ignored local paths.
 
+The latest [latency investigation](PERFORMANCE.md) compares 18 real Kimi calls per transport. Median director request time fell from **4.172 s** with Flower model tasks to **0.688 s** with the persistent gateway; director Nebius round-trip medians remained **0.687/0.688 s**. Subsequent decision intervals fell from **15.906–17.828 s** to **6.969–7.000 s**. Both runs completed all three rounds with zero unmatched responses, rejected proposals, or model timeouts. This measures client reuse plus model-task bypass together, while preserving native local Flower orchestration.
+
+The current regression suite passes **68 tests**, including concurrent client reuse, cancellation, continued use after a timeout, pending-request shutdown, transport/credential guards, state labels, and runtime-specific launcher defaults. Persistent gateway connections are now the default locally; hosted SuperGrid still uses `flower`. Earlier measurements below remain historical observations.
+
 ## Current local Flower checks
 
 The default launcher now runs six AI roles in one native local Flower AgentApp, using remote Nebius Kimi inference. Verified local run `10720407148437064032` returned accepted real model responses from all six roles. There is no hosted queue or Grid dispatch in this mode.

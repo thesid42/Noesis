@@ -35,6 +35,8 @@ On macOS/Linux, use `./start.sh --obs`. Omit the OBS switch for preview output. 
 
 The dashboard labels the active orchestration as **Local Flower Run** and shows the AgentApp run ID/status when the runtime reports them. Its model verification indicator reflects completed, accepted model responses, not merely a configured profile or running Flower process.
 
+Local mode defaults to `--inference-transport gateway`. One persistent async client in the Flower AgentApp sends requests to the authenticated loopback gateway, avoiding a new Flower model subprocess for each request. The six AI roles, strict result schemas, provenance, replay epochs, deadlines, and source-health checks are unchanged. Provider keys remain in the gateway; the AgentApp receives only a local routing token through its process environment. State reports `inference_transport: gateway`. Opt into `--inference-transport flower` to use native Flower model tasks locally. Hosted SuperGrid automatically uses `flower`; an explicit gateway option is rejected with `--runtime supergrid`.
+
 To inspect or stop the local launcher from another terminal:
 
 ```powershell

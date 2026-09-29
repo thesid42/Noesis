@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from pathlib import Path
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+import noesis.model_gateway as gateway
 from noesis.model_gateway import (
     ProviderTarget,
     create_app,
     ensure_gateway_token,
     load_provider_targets,
     model_catalog_json,
+    _timing_sink_from_env,
 )
 
 
@@ -67,6 +71,74 @@ def test_profile_endpoint_and_allowlist_fail_closed() -> None:
         assert accepted.status_code == 200
         assert calls[-1].headers["authorization"] == "Bearer minimax-private-key"
         assert calls[-1].url == ENDPOINT
+
+
+def test_successful_provider_timing_is_correlatable_and_contains_no_prompt_or_secret() -> None:
+    events: list[dict] = []
+    response_body = {"id": "resp-timing-1", "status": "completed", "output_text": "private prompt answer"}
+    app = create_app(
+        {"kimi-model": ProviderTarget("kimi", "kimi-model", ENDPOINT, "never-log-this-key", "Kimi")},
+        "internal-token",
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=response_body)),
+        timing_sink=events.append,
+    )
+    request_payload = {"model": "kimi-model", "input": "do-not-log-this-prompt"}
+    expected_hash = hashlib.sha256(json.dumps(
+        request_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    with TestClient(app) as client:
+        response = client.post("/v1/responses", headers={"Authorization": "Bearer internal-token"}, json=request_payload)
+    assert response.status_code == 200
+    assert response.json() == response_body
+    assert "upstream;dur=" in response.headers["server-timing"]
+    assert len(events) == 1
+    event = events[0]
+    assert event["event"] == "provider_success"
+    assert event["response_id"] == "resp-timing-1"
+    assert event["requested_model"] == "kimi-model" and event["profile"] == "kimi"
+    assert event["request_sha256"] == expected_hash
+    assert event["request_received_ns"] <= event["upstream_started_ns"] <= event["upstream_completed_ns"]
+    assert event["elapsed_ms"] >= 0 and event["upstream_ms"] >= 0 and event["gateway_processing_ms"] >= 0
+    serialized = json.dumps(event)
+    assert "do-not-log-this-prompt" not in serialized
+    assert "private prompt answer" not in serialized
+    assert "never-log-this-key" not in serialized and "internal-token" not in serialized
+    assert set(event) == {
+        "event", "request_received_ns", "upstream_started_ns", "upstream_completed_ns", "response_id",
+        "requested_model", "profile", "elapsed_ms", "upstream_ms", "gateway_processing_ms", "request_sha256",
+    }
+
+
+def test_provider_error_timing_has_status_and_type_only_without_response_id() -> None:
+    events: list[dict] = []
+    app = create_app(
+        {"kimi-model": ProviderTarget("kimi", "kimi-model", ENDPOINT, "never-log-this-key", "Kimi")},
+        "internal-token",
+        transport=httpx.MockTransport(lambda _request: httpx.Response(429, text="sensitive provider error")),
+        timing_sink=events.append,
+    )
+    with TestClient(app) as client:
+        response = client.post("/v1/responses", headers={"Authorization": "Bearer internal-token"}, json={"model": "kimi-model", "input": "private"})
+    assert response.status_code == 502
+    assert len(events) == 1
+    event = events[0]
+    assert event["event"] == "provider_error" and event["status"] == 429 and event["type"] == "upstream_status"
+    assert "response_id" not in event
+    assert "private" not in json.dumps(event) and "sensitive provider error" not in json.dumps(event)
+    assert set(event) == {"event", "status", "type"}
+
+
+def test_timing_path_is_opt_in_and_confined_to_private_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gateway, "ROOT", tmp_path)
+    sink = _timing_sink_from_env({gateway.TIMING_PATH_ENV: ".runtime/timing/gateway.jsonl"})
+    assert sink is not None
+    sink({"event": "provider_success", "response_id": "resp-safe"})
+    path = tmp_path / ".runtime" / "timing" / "gateway.jsonl"
+    assert json.loads(path.read_text(encoding="utf-8")) == {"event": "provider_success", "response_id": "resp-safe"}
+
+    outside = tmp_path / "tracked-timing.jsonl"
+    assert _timing_sink_from_env({gateway.TIMING_PATH_ENV: str(outside)}) is None
+    assert not outside.exists()
 
 
 def test_unkeyed_optional_profile_does_not_block_kimi() -> None:
