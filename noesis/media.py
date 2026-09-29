@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import re
 import threading
 import time
 from collections import OrderedDict, deque
@@ -232,6 +233,7 @@ class MediaEngine:
         if self.data_dir.name != "ES2002a" and (self.data_dir / "ES2002a").is_dir():
             self.data_dir = self.data_dir / "ES2002a"
         self._config = _safe_read_json(DEFAULT_CONFIG) or self._default_config()
+        self._adapt_config_to_data_dir()
         self._lock = threading.RLock()
         self._captures: dict[str, Any] = {}
         self._source_state: dict[str, dict[str, Any]] = {}
@@ -255,6 +257,44 @@ class MediaEngine:
         self._using_prepared = False
         self._prepared_manifest: dict[str, Any] | None = None
         self._init_camera_info()
+
+    def _adapt_config_to_data_dir(self) -> None:
+        """Use the standard AMI layout for any downloaded meeting session.
+
+        The corpus keeps the same five-camera/five-audio contract while the
+        filename prefix changes from session to session (for example,
+        ``ES2002a`` to ``ES2006a``).  Keep the authored ES2002a configuration
+        as the behavioral template and rewrite only those session-specific
+        paths when another AMI directory is selected through NOESIS_DATA_DIR.
+        """
+        video_root = self.data_dir / "video"
+        if not video_root.is_dir():
+            return
+        prefixes = []
+        for path in video_root.glob("*.Closeup1.avi"):
+            match = re.match(r"^(.+)\.Closeup1\.avi$", path.name)
+            if match:
+                prefixes.append(match.group(1))
+        if not prefixes:
+            return
+        prefix = sorted(prefixes)[0]
+        config = json.loads(json.dumps(self._config))
+        config["session"] = prefix
+        config["credits"] = (
+            f"Source footage and audio: AMI Meeting Corpus, session {prefix}, AMI Project. "
+            "Licensed under Creative Commons Attribution 4.0 International."
+        )
+        for camera in config.get("cameras", []):
+            video_file = str(camera.get("video_file", ""))
+            audio_file = camera.get("audio_file")
+            if video_file:
+                camera["video_file"] = f"{prefix}.{video_file.split('.', 1)[-1]}"
+            if audio_file:
+                camera["audio_file"] = f"{prefix}.{str(audio_file).split('.', 1)[-1]}"
+        program_audio = str(config.get("program_audio_file", ""))
+        if program_audio:
+            config["program_audio_file"] = f"{prefix}.{program_audio.split('.', 1)[-1]}"
+        self._config = config
 
     @staticmethod
     def _default_config() -> dict[str, Any]:
