@@ -3,49 +3,50 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#f5f0e8">
+    <meta name="theme-color" content="#f3f5f7">
     <script>try{document.documentElement.dataset.theme=localStorage.getItem('noesis-theme')||'day'}catch(e){}</script>
     <title>Noesis · Control room</title>
-    <link rel="stylesheet" href="/static/styles.css?v=ai-profile-audio-20260929">
-    <script src="/static/app.js?v=ai-profile-audio-20260929" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=readable-glass-20260929">
+    <script src="/static/app.js?v=readable-glass-20260929" defer></script>
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
         <a class="brand" href="/" aria-label="Noesis control room">
           <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
-          <span class="brand-copy"><strong>Noesis</strong><small>PRODUCTION CONTROL</small></span>
+          <span class="brand-copy"><strong>Noesis</strong></span>
         </a>
+        <div class="mode-card topbar-mode" id="mode-card" data-mode="unknown" aria-live="polite">
+          <span class="mode-orb" aria-hidden="true"></span>
+          <span class="mode-copy"><small>DIRECTOR MODE</small><strong id="mode-title">Waiting for controller</strong><span id="mode-detail">Connecting to local production service</span></span>
+        </div>
         <div class="topbar-right">
           <a class="program-link" href="/program" target="_blank" rel="noreferrer">Open program output <span aria-hidden="true">↗</span></a>
-          <button class="theme-toggle" id="theme-toggle" type="button" title="Toggle day / night view"><span class="theme-toggle-icon" id="theme-toggle-icon">☀</span></button>
-          <span class="connection-indicator" id="connection-indicator" data-state="connecting"><span class="status-dot"></span><span id="connection-label">Connecting</span></span>
-          <button class="icon-button credits-trigger" id="credits-open" type="button" aria-haspopup="dialog" aria-controls="credits-dialog" title="Source credits and data notes">ⓘ <span>Credits</span></button>
+          <button class="theme-toggle" id="theme-toggle" type="button" title="Switch to night mode" aria-label="Switch to night mode"><span class="theme-toggle-icon" id="theme-toggle-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M20.2 15.3A8.5 8.5 0 0 1 8.7 3.8 8.5 8.5 0 1 0 20.2 15.3Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
         </div>
       </header>
 
       <main class="workspace">
         <section class="page-heading" aria-labelledby="page-title">
-          <div>
-            <p class="eyebrow">LIVE PRODUCTION</p>
-            <h1 id="page-title">Control room</h1>
-            <p class="page-subtitle">Where perception meets production. Every angle, every moment is observed and prioritized.</p>
-          </div>
-          <div class="mode-card" id="mode-card" data-mode="unknown" aria-live="polite">
-            <span class="mode-orb" aria-hidden="true"></span>
-            <span class="mode-copy"><small>DIRECTOR MODE</small><strong id="mode-title">Waiting for controller</strong><span id="mode-detail">Connecting to local production service</span></span>
-          </div>
+          <h1 id="page-title">Control room</h1>
+          <p class="page-subtitle">Where perception meets production. Every angle, every moment is observed and prioritized.</p>
         </section>
 
         <section class="control-bar panel" aria-label="Session controls">
           <div class="session-selectors">
-            <label class="select-field"><span>INPUT</span><select id="input-mode" aria-label="Input source"><option value="synthetic">Synthetic test feeds</option><option value="ami">AMI replay</option></select></label>
+            <label class="select-field"><span>INPUT</span><select id="input-mode" aria-label="Input source"><option value="synthetic">Synthetic test feeds</option><option value="ami">AMI · 2-minute replay</option></select></label>
             <span class="selector-divider" aria-hidden="true"></span>
             <label class="select-field"><span>OUTPUT</span><select id="output-mode" aria-label="Output destination"><option value="preview">Local preview</option><option value="obs">OBS Studio</option></select></label>
             <span class="selector-divider profile-divider" aria-hidden="true"></span>
-            <label class="select-field model-select-field"><span id="model-profile-label">AI PROFILE</span><select id="model-profile" aria-label="AI model profile" disabled><option value="">Loading profiles…</option></select></label>
-            <span class="profile-status" id="model-profile-status">Waiting for model configuration</span>
-            <label class="select-field"><span>BROADCAST DELAY</span><select id="broadcast-delay" aria-label="Broadcast delay"><option value="0">0 seconds</option><option value="3">3 seconds</option><option value="5" selected>5 seconds</option><option value="8">8 seconds</option><option value="10">10 seconds</option><option value="15">15 seconds</option></select></label>
+            <label class="select-field model-select-field"><span id="model-profile-label">AI</span><select id="model-profile" aria-label="AI model profile" disabled><option value="">Loading profiles…</option></select></label>
+            <span class="visually-hidden" id="model-profile-status" aria-live="polite">Waiting for model configuration</span>
+            <label class="select-field"><span>DELAY</span><select id="broadcast-delay" aria-label="Broadcast delay"><option value="0">0 seconds</option><option value="3">3 seconds</option><option value="5" selected>5 seconds</option><option value="8">8 seconds</option><option value="10">10 seconds</option><option value="15">15 seconds</option></select></label>
+          </div>
+          <div class="session-actions control-actions">
+            <button class="button button-primary" id="start-session" type="button"><span class="button-icon" aria-hidden="true">▶</span> Start session</button>
+            <button class="button button-secondary" id="pause-session" type="button" disabled><span class="button-icon" aria-hidden="true">Ⅱ</span> Pause</button>
+            <button class="button button-quiet" id="stop-session" type="button" disabled>Stop</button>
+            <button class="button button-resume" id="resume-autopilot" type="button" disabled><span aria-hidden="true">↻</span> Autopilot</button>
           </div>
         </section>
 
@@ -61,7 +62,6 @@
                 <div class="preview-placeholder" id="preview-placeholder"><span class="placeholder-glyph" aria-hidden="true">▧</span><strong>Program image will appear here</strong><span>Start a session to see the selected camera.</span></div>
                 <div class="program-stage-scrim" aria-hidden="true"></div>
                 <div class="stage-topline"><span class="stage-live" id="stage-live"><i></i> STANDBY</span><span class="stage-time" id="session-time">00:00 <span>/ 00:00</span></span></div>
-                <div class="stage-lowerthird"><span class="lowerthird-kicker" id="scene-kicker">PROGRAM</span><strong id="program-camera">Awaiting program source</strong><span id="program-reason">The controller’s selected camera will appear here.</span></div>
                 <span class="preview-watermark" id="preview-watermark">LOCAL PREVIEW</span>
               </div>
               <div class="program-footer">
@@ -76,16 +76,6 @@
               </div>
             </section>
 
-            <section class="panel session-actions-panel" aria-label="Session controls">
-              <div class="session-actions">
-                <button class="button button-primary" id="start-session" type="button"><span class="button-icon" aria-hidden="true">▶</span> Start session</button>
-                <button class="button button-secondary" id="pause-session" type="button" disabled><span class="button-icon" aria-hidden="true">Ⅱ</span> Pause</button>
-                <button class="button button-quiet" id="stop-session" type="button" disabled>Stop</button>
-                <span class="action-divider" aria-hidden="true"></span>
-                <button class="button button-resume" id="resume-autopilot" type="button" disabled><span aria-hidden="true">↻</span> Resume autopilot</button>
-              </div>
-            </section>
-
             <section class="panel sources-panel" aria-labelledby="sources-heading">
               <div class="section-heading sources-heading">
                 <div><p class="eyebrow">INPUT MONITOR</p><h2 id="sources-heading">Camera sources <span class="heading-count" id="source-count">5</span></h2></div>
@@ -96,39 +86,58 @@
               </div>
             </section>
 
-            <section class="panel agent-panel" aria-labelledby="agent-panel-heading">
-              <div class="section-heading compact-heading"><div><p class="eyebrow">FLOWER AGENTS</p><h2 id="agent-panel-heading">Agent heartbeat</h2></div></div>
-              <div class="agent-list" id="agent-list"><div class="empty-inline">No agent heartbeat received yet.</div></div>
-            </section>
           </div>
 
           <aside class="side-column">
-            <section class="panel ops-panel broadcast-panel" aria-label="Broadcast timing and observations">
-              <div class="section-heading compact-heading"><div><p class="eyebrow">BROADCAST BUFFER</p><h2>Timing &amp; observations</h2></div></div>
-              <p class="broadcast-status" id="broadcast-status">5-second delay · ready to start</p>
-              <p class="section-note" id="broadcast-metrics">Input and output clocks will appear during playback.</p>
-              <div class="ops-rule"></div><p class="section-note" id="perception-status">Background speech and visual observations</p>
-              <p class="transcript-preview" id="transcript-preview">No speech observations yet.</p>
-            </section>
-            <section class="panel crew-panel" aria-labelledby="crew-heading">
-              <div class="section-heading compact-heading"><div><p class="eyebrow">DISTRIBUTED CREW</p><h2 id="crew-heading">Agent activity</h2></div><span class="crew-state" id="crew-state">CHECKING</span></div>
-              <div class="crew-summary" id="crew-summary"><span class="crew-avatar crew-avatar-director">D</span><div><strong>Crew runtime</strong><span id="flower-summary">Waiting for agent snapshot</span></div></div>
-              <div class="grid-run" id="grid-run" hidden aria-live="polite"><span class="grid-run-label" id="grid-run-label"></span><span class="grid-run-id" id="grid-run-id"></span><span class="grid-run-status" id="grid-run-status"></span></div>
-              <div class="provenance-heading"><span>AI MODEL RESPONSES</span><span id="model-verification-status"></span></div>
-              <div class="ai-provenance" id="ai-provenance" aria-label="Latest model inference status"><div class="empty-inline">Waiting for configured AI roles.</div></div>
-              <div class="trace-heading"><span>RECENT TRACE</span><span id="trace-count">—</span></div>
-              <ol class="trace-list" id="trace-list" aria-live="polite"><li class="empty-trace">Trace events will appear as the controller reports them.</li></ol>
+            <section class="panel situation-panel" aria-labelledby="situation-heading">
+              <div class="section-heading compact-heading"><div><p class="eyebrow">LIVE SITUATION</p><h2 id="situation-heading">What the director sees</h2></div></div>
+              <div class="situation-grid">
+                <div><span>PROGRAM</span><strong id="situation-shot">No source selected</strong></div>
+                <div><span>SOURCE</span><strong id="situation-health">Waiting</strong></div>
+                <div><span>SPEAKER</span><strong id="situation-speaker">Not detected</strong></div>
+                <div><span>OUTPUT</span><strong id="broadcast-status">Ready to start</strong></div>
+              </div>
+              <div class="situation-note"><span>RECENT SPEECH</span><p id="transcript-preview">No speech observations yet.</p></div>
             </section>
 
-            <section class="panel ops-panel" aria-labelledby="ops-heading">
-              <div class="section-heading compact-heading"><div><p class="eyebrow">INTEGRATIONS</p><h2 id="ops-heading">Production links</h2></div></div>
-              <div class="integration-row"><span class="integration-icon obs-icon" aria-hidden="true">O</span><div class="integration-copy"><strong>OBS Studio</strong><span id="obs-status">Status not yet reported</span></div><span class="integration-indicator" id="obs-indicator" data-state="unknown" aria-label="OBS status"></span></div>
-              <div class="obs-actions"><button type="button" class="button button-small button-secondary" id="obs-connect">Connect OBS</button><button type="button" class="button button-small button-quiet" id="obs-setup">Set up scenes</button></div>
-              <div class="ops-rule"></div>
-              <div class="fault-heading"><div><strong>Fault injection</strong><span>Visible test signal into a source</span></div><span class="test-label">TEST</span></div>
-              <div class="fault-controls"><label class="visually-hidden" for="fault-camera">Camera to affect</label><select id="fault-camera" aria-label="Camera to affect"><option value="closeup1">Close-up 1</option><option value="closeup2">Close-up 2</option><option value="closeup3">Close-up 3</option><option value="closeup4">Close-up 4</option><option value="corner">Corner</option></select><label class="visually-hidden" for="fault-kind">Fault type</label><select id="fault-kind" aria-label="Fault type"><option value="black">Blackout</option><option value="freeze">Freeze frame</option><option value="offline">Offline · 10 sec</option><option value="none">Clear fault</option></select><button type="button" class="button button-small button-fault" id="inject-fault">Apply</button></div>
-              <p class="ops-footnote" id="ops-footnote">Test faults affect the source used by the program and health monitor.</p>
+            <section class="panel director-panel" aria-labelledby="director-heading">
+              <div class="section-heading compact-heading director-heading">
+                <div><p class="eyebrow">DIRECTOR DECISION</p><h2 id="director-heading">What is happening now</h2></div>
+                <span class="director-mode-badge" id="director-mode-badge">STANDBY</span>
+              </div>
+              <div class="director-current" aria-live="polite">
+                <span class="decision-label">CURRENT ACTION</span>
+                <strong id="director-action">Waiting for a session</strong>
+                <p id="director-rationale">Start a session to see camera decisions and their reasons.</p>
+              </div>
+              <div class="decision-feed-heading"><span>RECENT DIRECTOR ACTIONS</span><span id="trace-count">—</span></div>
+              <ol class="decision-list" id="trace-list" aria-live="polite"><li class="empty-trace">Director actions will appear here during the session.</li></ol>
             </section>
+
+            <details class="panel technical-details">
+              <summary><span><strong>Technical details</strong><small>Agents, models, OBS and test controls</small></span><i aria-hidden="true">⌄</i></summary>
+              <div class="technical-body">
+                <section class="technical-section" aria-labelledby="crew-heading">
+                  <div class="technical-heading"><h3 id="crew-heading">AI crew</h3><span class="crew-state" id="crew-state">CHECKING</span></div>
+                  <div class="crew-summary" id="crew-summary"><span class="crew-avatar crew-avatar-director">D</span><div><strong>Crew runtime</strong><span id="flower-summary">Waiting for agent snapshot</span></div></div>
+                  <div class="grid-run" id="grid-run" hidden aria-live="polite"><span class="grid-run-label" id="grid-run-label"></span><span class="grid-run-id" id="grid-run-id"></span><span class="grid-run-status" id="grid-run-status"></span></div>
+                  <div class="agent-list" id="agent-list"><div class="empty-inline">No agent heartbeat received yet.</div></div>
+                  <div class="provenance-heading"><span>MODEL RESPONSES</span><span id="model-verification-status"></span></div>
+                  <div class="ai-provenance" id="ai-provenance" aria-label="Latest model inference status"><div class="empty-inline">Waiting for configured AI roles.</div></div>
+                </section>
+                <section class="technical-section" aria-labelledby="ops-heading">
+                  <div class="technical-heading"><h3 id="ops-heading">Production diagnostics</h3></div>
+                  <p class="technical-readout" id="broadcast-metrics">Input and output clocks will appear during playback.</p>
+                  <p class="technical-readout" id="perception-status">Background speech and visual observations</p>
+                  <div class="integration-row"><span class="integration-icon obs-icon" aria-hidden="true">O</span><div class="integration-copy"><strong>OBS Studio</strong><span id="obs-status">Status not yet reported</span></div><span class="integration-indicator" id="obs-indicator" data-state="unknown" aria-label="OBS status"></span></div>
+                  <div class="obs-actions"><button type="button" class="button button-small button-secondary" id="obs-connect">Connect OBS</button><button type="button" class="button button-small button-quiet" id="obs-setup">Set up scenes</button></div>
+                  <div class="ops-rule"></div>
+                  <div class="fault-heading"><div><strong>Fault injection</strong><span>Visible test signal into a source</span></div><span class="test-label">TEST</span></div>
+                  <div class="fault-controls"><label class="visually-hidden" for="fault-camera">Camera to affect</label><select id="fault-camera" aria-label="Camera to affect"><option value="closeup1">Close-up 1</option><option value="closeup2">Close-up 2</option><option value="closeup3">Close-up 3</option><option value="closeup4">Close-up 4</option><option value="corner">Corner</option></select><label class="visually-hidden" for="fault-kind">Fault type</label><select id="fault-kind" aria-label="Fault type"><option value="black">Blackout</option><option value="freeze">Freeze frame</option><option value="offline">Offline · 10 sec</option><option value="none">Clear fault</option></select><button type="button" class="button button-small button-fault" id="inject-fault">Apply</button></div>
+                  <p class="ops-footnote" id="ops-footnote">Test faults affect the source used by the program and health monitor.</p>
+                </section>
+              </div>
+            </details>
           </aside>
         </div>
         <footer class="page-footer"><span>Local production controller</span><span>Recorded footage and generated feeds are identified at source</span><button type="button" id="credits-open-footer">Data credits</button></footer>
@@ -138,7 +147,7 @@
     <dialog class="credits-dialog" id="credits-dialog" aria-labelledby="credits-title">
       <form method="dialog"><button class="dialog-close" aria-label="Close credits">×</button></form>
       <p class="eyebrow">SOURCES &amp; ATTRIBUTION</p><h2 id="credits-title">Demo credits</h2>
-      <div class="credits-body"><p>When AMI replay is available, the source footage and audio are from the AMI Meeting Corpus, session ES2002a, AMI Project.</p><p><a href="https://groups.inf.ed.ac.uk/ami/corpus/" target="_blank" rel="noreferrer">AMI Meeting Corpus</a> · Licensed under <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">Creative Commons Attribution 4.0 International</a>.</p><p>Noesis modifications may include selected excerpts, transcoding, automatic camera selection, and clearly labeled test faults. No endorsement by the source creators is implied.</p><p>Synthetic feeds are generated test imagery, not AMI footage or a live camera. The current input and output modes are shown in the control room.</p></div>
+      <div class="credits-body"><p>When AMI replay is available, the source footage and audio are from the selected AMI Meeting Corpus session.</p><p><a href="https://groups.inf.ed.ac.uk/ami/corpus/" target="_blank" rel="noreferrer">AMI Meeting Corpus</a> · Licensed under <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">Creative Commons Attribution 4.0 International</a>.</p><p>Noesis modifications may include selected excerpts, transcoding, automatic camera selection, and clearly labeled test faults. No endorsement by the source creators is implied.</p><p>Synthetic feeds are generated test imagery, not AMI footage or a live camera. The current input and output modes are shown in the control room.</p></div>
     </dialog>
     <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
   </body>

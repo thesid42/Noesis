@@ -1,6 +1,10 @@
 # Noesis
 
-**An autonomous production crew for panel discussions.** Noesis directs five synchronized views into one continuous program, with a shared replay clock and persistent program audio.
+**Your autonomous production crew.** Named after the Greek *nóēsis*: thought and understanding.
+
+An autonomous production controller for small panel discussions. Five synchronized camera views feed one continuous program. Camera agents report speaker/health evidence, a director proposes shots, and a local controller validates every action and keeps directing when agents are unavailable.
+
+The runnable demo includes a control room, generated test feeds, an AMI replay adapter, real Flower 1.39.0 AgentApps, and an OBS WebSocket v5 bridge. 
 
 ## How it works
 
@@ -13,6 +17,72 @@ Current measured audio is the primary speaker evidence. Images establish whether
 The local controller protects playback and output: it checks the current source is healthy, rejects stale or mismatched AI results, enforces manual override and replay epochs, and executes accepted camera choices. AI is responsible for editorial choices; deterministic guards handle safety and output integrity. If AI work is unavailable, the controller holds a healthy current shot; source-health recovery can select another healthy view. It does not substitute a rules-based speaker-ranking director.
 
 Kimi is the default and verified model profile. The MiniMax selector is available when configured but was not run or verified for this demo. Provider keys stay in local configuration and the model gateway, outside the browser and AgentApp prompts. The dashboard distinguishes configured models from models that have returned a verified response.
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph client["Client"]
+        UI["Control room<br/>browser dashboard"]
+        PROG["/program page<br/>→ OBS / preview"]
+    end
+
+    subgraph noesis["Noesis service · 127.0.0.1:8765"]
+        MEDIA["Media<br/>AMI replay / synthetic feeds"]
+        PERC["Perception (optional)<br/>speech · frame measures"]
+        CTRL["Controller<br/>session · playback · state"]
+        AICTL["AI control<br/>leases · evidence · decisions"]
+        GUARD["Safety guards<br/>health · epochs · manual override"]
+        BUF["Broadcast buffer<br/>delayed program + scheduled cuts"]
+    end
+
+    subgraph crew["Flower AgentApp · 6 role loops"]
+        CAM["4 camera agents"]
+        CRITIC["Critic"]
+        DIR["Director"]
+    end
+
+    GW["Model gateway · 127.0.0.1:8770<br/>model allowlist + credential selection"]
+
+    subgraph providers["Model providers"]
+        NEB["Nebius Token Factory<br/>Kimi / MiniMax"]
+        FLW["Flower AI<br/>Qwen3.5-9B"]
+    end
+
+    MEDIA --> CTRL
+    PERC --> CTRL
+    UI <-->|"state · events · snapshot<br/>session · override"| CTRL
+    CAM -->|"heartbeat · GET lease"| CTRL
+    CRITIC -->|"heartbeat · GET lease"| CTRL
+    DIR -->|"heartbeat · GET lease"| CTRL
+    CAM -->|"POST report"| AICTL
+    CRITIC -->|"POST report"| AICTL
+    DIR -->|"POST decision"| AICTL
+    AICTL --> GUARD --> CTRL
+    CAM -->|inference| GW
+    CRITIC -->|inference| GW
+    DIR -->|inference| GW
+    GW -->|"director + critic"| NEB
+    GW -->|cameras| FLW
+    CTRL --> BUF --> PROG
+```
+
+- **Media** decodes the five AMI feeds (or synthetic test feeds) and the program audio mix; **Perception** optionally adds English speech transcripts and frame measurements (blur, brightness, frontal-face count) outside the inference and playback paths.
+- **Controller** owns session, playback, and the state contract; it hands each AgentApp role a lease with compact source measurements and role reports, and never forwards raw frames, audio, or reference annotations to a provider.
+- **AI control** manages per-role leases, pins the latest sufficiently recent camera and critic reports as director evidence, and records accepted results. **Safety guards** verify the target source is healthy, reject stale or mismatched results, and enforce manual override and replay epochs before a choice reaches the program.
+- The **Flower AgentApp** runs four camera agents, a critic, and a director as independent loops sharing one persistent client. Each role fetches its own lease, calls the model through the local gateway, and posts a report (`/api/ai/report`) or decision (`/api/ai/decision`).
+- The **model gateway** holds all provider keys, selects the credential by allowlisted model ID, and routes the director and critic to Nebius (Kimi) while the four cameras use Qwen3.5-9B through Flower. The browser and AgentApp prompts never receive provider keys.
+- The **broadcast buffer** delays program video, audio, and scheduled cuts together by the selected delay, and serves the `/program` page consumed by OBS or the local preview.
+
+The hosted SuperGrid runtime is an explicit alternative to the default local Flower mode; see [Flower runtime setup](docs/FLOWER.md).
+
+## Control room dashboard
+
+The dashboard at **http://127.0.0.1:8765** is a static page (`noesis/static/`, no build step) that polls `/api/state`, `/api/events`, and `/api/agents/snapshot`. It shows the delayed program preview, the five live source monitors, session and broadcast-delay controls, and manual override.
+
+- **AI model responses** renders each role's latest accepted result with its verification state inline beside the title: cameras show `recommendation` / `confidence` / `reason`, the director shows `action` / `camera_id` / `reason`, and the critic shows `assessment` / `reason`. A role with only an older result is marked `PREVIOUS ROUND`; a stale profile is `PREVIOUS PROFILE`.
+- **Flower agents** lists per-role heartbeats and run identity; **Distributed crew** shows the runtime, model, and recent trace; **Broadcast buffer** reports the input/output clocks, captured FPS, queued cuts, and missed deadlines.
+- The interface ships day and night glassmorphic themes toggled from the top bar; the choice persists per browser.
 
 ## Camera model override
 
@@ -65,12 +135,6 @@ Open **http://127.0.0.1:8765**, choose Synthetic or AMI input and a broadcast de
 The speech preparation command downloads the small English Whisper model once into ignored local storage. Runtime startup never downloads models; missing optional speech dependencies/cache are shown as unavailable. Frame analysis is sampled at most once a second, speech uses four-second chunks, and both run outside the inference/playback path.
 
 For local media preparation and OBS setup commands, see [Flower and demo setup](docs/FLOWER.md). There is no JavaScript build step.
-
-## Hackathon delivery checklist
-
-Requirements were checked against the organizer's public requirements JSON on 29 September 2026. Required deliverables include collaborative Flower Agents on SuperGrid, an AgentApp published to Flower Hub, a team registration form with a team description and GitHub repository, and a 3–5 minute demo. Keep each task at or below five minutes. Endeavor participation is optional.
-
-The hosted SuperGrid proof from run `96528684490097715` completed with six accepted AI role responses and a Director choice of Closeup3; the rehearsal passed manual override and recovered from a source fault in 984 ms. This is historical hosted-mode proof, not evidence that the default local runtime is using SuperGrid. The local AgentApp package has been built and secret-checked, but not published to Flower Hub. The team form, final description, repository submission, and demo recording also remain submission tasks. A local Flower run alone does not satisfy the event's hosted SuperGrid requirement.
 
 ## Media and attribution
 

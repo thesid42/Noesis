@@ -5,7 +5,7 @@
     output: $('program-output'), image: $('program-feed'), live: $('output-live'), liveText: $('output-live').querySelector('span'),
     label: $('output-label'), clock: $('output-clock'), kicker: $('output-kicker'), camera: $('output-camera'),
     reason: $('output-reason'), input: $('input-label'), scene: $('scene-label'), audio: $('program-audio'),
-    audioButton: $('program-audio-button'), audioLabel: $('audio-label'), error: $('program-error'),
+    audioButton: $('program-audio-button'), audioLabel: $('audio-label'), error: $('program-error'), progress: $('output-progress'),
   };
   const cameraNames = { closeup1: 'Close-up 1', closeup2: 'Close-up 2', closeup3: 'Close-up 3', closeup4: 'Close-up 4', corner: 'Corner', slate: 'Unavailable slate' };
   let current = null;
@@ -58,9 +58,13 @@
     const name = (camera && camera.name) || cameraNames[cameraId] || cameraId || 'Awaiting program source';
     const status = session.status || 'unknown';
     const active = status === 'running';
+    refs.output.dataset.status = status;
     refs.live.dataset.active = String(active);
     setText(refs.liveText, active ? 'ON AIR' : status === 'buffering' ? 'BUFFERING' : status === 'paused' ? 'PAUSED' : status === 'stopped' ? 'STOPPED' : 'STANDBY');
-    setText(refs.clock, fmtTime(session.time_s));
+    const duration = Number(session.duration_s) || 0;
+    const elapsed = Math.max(0, Number(session.time_s) || 0);
+    setText(refs.clock, duration > 0 ? `${fmtTime(elapsed)} / ${fmtTime(duration)}` : fmtTime(elapsed));
+    if (refs.progress) refs.progress.style.width = `${duration > 0 ? Math.min(100, (elapsed / duration) * 100) : 0}%`;
     setText(refs.camera, name);
     setText(refs.reason, program.reason || (program.scene ? `Scene · ${program.scene}` : 'The controller’s selected camera will appear here.'));
     setText(refs.scene, program.scene || '');
