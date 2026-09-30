@@ -2,9 +2,9 @@
 
 **Your autonomous production crew.** Named after the Greek *nóēsis*: thought and understanding.
 
-An autonomous production controller for small panel discussions. Five synchronized camera views feed one continuous program. Camera agents report speaker/health evidence, a director proposes shots, and a local controller validates every action and keeps directing when agents are unavailable.
+An autonomous production controller for small panel discussions. Five synchronized camera views feed one continuous program. Camera agents report speaker, visual, and health evidence, a director proposes shots, and a local controller validates every action and keeps a healthy shot on air when agents are unavailable.
 
-The runnable demo includes a control room, generated test feeds, an AMI replay adapter, real Flower 1.39.0 AgentApps, and an OBS WebSocket v5 bridge. 
+The runnable demo includes a control room, generated test feeds, an AMI replay adapter, real Flower 1.39.0 AgentApps, and an OBS WebSocket v5 bridge.
 
 ## How it works
 
@@ -68,7 +68,7 @@ flowchart TB
 ```
 
 - **Media** decodes the five AMI feeds (or synthetic test feeds) and the program audio mix; **Perception** optionally adds English speech transcripts and frame measurements (blur, brightness, frontal-face count) outside the inference and playback paths.
-- **Controller** owns session, playback, and the state contract; it hands each AgentApp role a lease with compact source measurements and role reports, and never forwards raw frames, audio, or reference annotations to a provider.
+- **Controller** owns session, playback, and the state contract; it hands each AgentApp role a lease with compact source measurements and role reports. Camera leases also carry one bounded, timestamp-pinned JPEG for visual inference. Full recordings, raw audio, and reference annotations stay local.
 - **AI control** manages per-role leases, pins the latest sufficiently recent camera and critic reports as director evidence, and records accepted results. **Safety guards** verify the target source is healthy, reject stale or mismatched results, and enforce manual override and replay epochs before a choice reaches the program.
 - The **Flower AgentApp** runs four camera agents, a critic, and a director as independent loops sharing one persistent client. Each role fetches its own lease, calls the model through the local gateway, and posts a report (`/api/ai/report`) or decision (`/api/ai/decision`).
 - The **model gateway** holds all provider keys, selects the credential by allowlisted model ID, and routes the director and critic to Nebius (Kimi) while the four cameras use Qwen3.5-9B through Flower. The browser and AgentApp prompts never receive provider keys.
