@@ -1,13 +1,17 @@
 # Noesis SuperGrid AgentApp
 
-This Flower 1.39 AgentApp supplies one Hub coordinator and six trusted SuperNode roles: four camera assessors, one measured-signal critic, and one director. The coordinator discovers role capabilities through Grid handshakes, requests each leased round from the local director SuperNode, fans camera and critic inference out in parallel, and asks the director to commit only when all five accepted report IDs are present.
+Noesis is an autonomous production crew for multi-camera panel discussions. This Flower 1.39 AgentApp supplies four camera assessors, a critic, and a director. The full control room, media engine, and OBS bridge live in the [Noesis repository](https://github.com/thesid42/Noesis).
 
-All model calls run on SuperNodes through the Flower OpenAI-compatible runtime. The studio launcher points that runtime at the local Noesis model gateway; the gateway selects one of the configured Nebius model IDs and keeps provider credentials out of SuperLink, FAB configuration, prompts, and logs. The coordinator performs no direct HTTP access to the studio controller.
+The default studio launcher uses one local Flower AgentApp with six continuous role loops and persistent inference connections to a local model gateway. Camera agents use Qwen3.5-9B through Flower AI with reasoning disabled; the critic and director use Nebius Kimi K2.7. The gateway holds provider credentials and routes requests by model ID. The browser and AgentApp prompts receive no provider keys.
 
-Camera and critic prompts receive only measured source health, speaker activity, signal quality, and timing. They do not receive raw media or transcripts, and the app does not claim semantic video or audio understanding. A round with missing, stale, invalid, expired, or rejected evidence is skipped without a fallback camera decision.
+For hosted SuperGrid, the Hub coordinator discovers six trusted SuperNode roles through Grid handshakes, obtains a leased round through the director SuperNode, fans camera and critic inference out in parallel, and asks the director to commit only when all five accepted report IDs are present. Hosted model calls use the Flower OpenAI-compatible runtime on SuperNodes. The Hub coordinator performs no direct HTTP access to the studio controller.
+
+Each camera model receives one timestamp-pinned JPEG of its own view plus measured health, audio activity, quality, and timing. Images are bounded to 640x360 and 128 KiB. The director and critic receive structured camera assessments and available bounded editorial context; the local continuous mode includes optional recent transcripts and shot history. Full recordings, raw audio, and reference annotations stay local. Image and report timestamps, hashes, session epochs, and model identities are validated.
+
+Current audio is primary speaker evidence; a still image assesses framing, an empty view, or directly visible board interaction. A clear face or static board is not sufficient reason to cut. The director makes editorial choices; deterministic code validates timing, source health, and manual override. Failed continuous requests release their matching lease and report errors without replacing the last accepted evidence. Already-aired targets remain rejected.
 
 The Hub run prompt is a JSON object such as `{"mode":"coordinator","duration_s":240,"node_ids":["123","456"]}`. Omitted or unrecognized prompts default to coordinator mode. `node_ids`, when supplied by the trusted launcher, limits discovery to those Grid nodes. Each SuperNode must receive trusted node configuration with `role`, `agent_id`, `controller_url` (`http://127.0.0.1:8765`), and `camera_id` for camera roles.
 
-Publish this directory as the `thesid42/noesis-agents` Flower app at version `0.2.0`. Local development dependencies are declared in `pyproject.toml`; no provider request is made by the app during import or packaging.
+App identity: `thesid42/noesis-agents`, version `0.2.0`. A hosted run requires the configured studio controller and trusted SuperNodes; publishing the AgentApp does not host the video dashboard or OBS. See the repository's [setup guide](https://github.com/thesid42/Noesis/blob/main/docs/FLOWER.md). No provider request is made during import or packaging.
 
 Licensed under the MIT License; see [LICENSE](LICENSE).

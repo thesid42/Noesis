@@ -20,6 +20,8 @@ Kimi is the default and verified model profile. The MiniMax selector is availabl
 
 ## Architecture
 
+![Noesis application architecture](docs/noesis-architecture.png)
+
 ```mermaid
 flowchart TB
     subgraph client["Client"]

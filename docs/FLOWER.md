@@ -70,9 +70,11 @@ The hosted coordinator uses a bounded task of at most 240 seconds, below the eve
 
 This is historical evidence from the earlier hosted mode, not a statement that the current default is using SuperGrid. All six authenticated federation nodes came online. Kimi coordinator run `96528684490097715` completed in 245.545 seconds and returned accepted responses from all six roles; the Director chose Closeup3. The rehearsal passed manual override and recovered from a source fault in 984 ms. A later hosted run was active during the final short AMI replay: four camera reports arrived at 17–19 seconds, but a Director decision did not arrive before the 20-second media reached EOF. That hosted replay did not prove AMI AI cuts before EOF. The newer local run did: all six responses and one AI cut were accepted within the clip; see [current validation](VALIDATION.md).
 
-The event separately requires collaborative Flower Agents on SuperGrid and an AgentApp published to Flower Hub. Local Flower mode alone does not establish the SuperGrid requirement. The Hub package was built and secret-checked locally from seven files, but it was deliberately not published. No MiniMax inference was run.
+The event separately requires collaborative Flower Agents on SuperGrid and an AgentApp published to Flower Hub. Local Flower mode alone does not establish the SuperGrid requirement. [Noesis v0.2.0 is published on Flower Hub](https://flower.ai/apps/thesid42/noesis-agents). The seven-file source package passed the configured-secret scan, the CLI confirmed a successful upload, and the public listing was verified. No MiniMax inference was run.
 
-## Local Flower Hub package review
+## Flower Hub package
+
+The published app is `@thesid42/noesis-agents`, version `0.2.0`. It contains three Python source files, README, LICENSE, `.gitignore`, and `pyproject.toml` (105,268 bytes total). Credentials, AMI footage, and recordings are excluded. Publication distributes the AgentApp; the studio controller, media sources, and trusted SuperNodes must still be configured for a hosted run.
 
 The AgentApp can be prepared for review without publishing:
 

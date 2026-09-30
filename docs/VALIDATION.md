@@ -6,7 +6,7 @@ The current local implementation includes independent AI role updates, backgroun
 
 The 25.166-second OBS recording includes silent buffer fill and delayed continuous AMI audio. Measured audio offset was about 5.35 seconds relative to the source mix. OBS confirmed recording stopped after output drained. Setup now refreshes the existing Noesis browser source to prevent cached player code from retaining the old audio clock, and refuses setup while recording. The recording is `recordings/verified-qwen-delayed-ami.mp4`; this is actual mixed-model output with an AI cut, not a synthetic timing simulation. Fine lip-sync and longer editorial evaluation remain unverified.
 
-The first all-Kimi buffered test missed one deadline; five seconds is not a latency guarantee. The UI offers longer delays. Buffer memory peaked near 12 MiB, and throughput reflects the AMI sources' mixed native frame rates. MiniMax was not run; nothing was published to Flower Hub.
+The first all-Kimi buffered test missed one deadline; five seconds is not a latency guarantee. The UI offers longer delays. Buffer memory peaked near 12 MiB, and throughput reflects the AMI sources' mixed native frame rates. MiniMax was not run. Subsequent publication is confirmed: [Noesis v0.2.0 on Flower Hub](https://flower.ai/apps/thesid42/noesis-agents), seven source/configuration files (105,268 bytes), zero configured-secret matches, successful CLI upload, and verified public README. This publication check did not run model inference or replay media.
 
 The final regression suite passes **104 tests**. It covers fixed director targets and immutable evidence, per-role model/reasoning routing and verification, credential isolation, stale acquisition timestamps, pause/seek/EOF buffering, missing sources, manual queue invalidation, causal perception, and OBS refresh guards. JavaScript syntax and Git whitespace checks pass. Configured-secret scanning found no matches in public project files.
 
@@ -42,7 +42,7 @@ Non-secret live reports are saved locally in `.runtime/local/kimi-acceptance.jso
 | Health and manual guards | The Kimi rehearsal recovered from a source fault in 984 ms and passed the manual override check. |
 | AMI/OBS output smoke test | Five healthy feeds; video finalized at EOF. Recording length 20.03 s; audio length 19.93 s, peak 0.424103, RMS 0.032268. |
 | Browser audio smoke test | AMI audio was observed unmuted and playing for 6.6 s; the media element reached `readyState` 4. |
-| Flower Hub package | `scripts/prepare_hub.py` built a local FAB from seven checked source files and reported zero configured-secret matches. It was not published and remains in ignored `.runtime/hub/`. |
+| Flower Hub package | At the time of the hosted checks, `scripts/prepare_hub.py` built a local FAB from seven checked source files and reported zero configured-secret matches. Publication was completed later; see the current publication evidence above. |
 | Recorded outputs | `recordings/verified-supergrid-kimi.mp4` and `recordings/verified-supergrid-ami.mp4` are stream-copy remuxes of actual recordings, retained locally. The AMI replay reached EOF before an AI camera decision, so that file is media/audio evidence, not proof of an AI cut on AMI. |
 
 The verified Kimi role responses, Director choice, health recovery, and manual override are recorded in `.runtime/supergrid/kimi-acceptance.json`. The completed Flower run is also recorded in `.runtime/supergrid/run-history.json`. Do not expose provider keys or private account data from the local reports.
@@ -65,18 +65,17 @@ Kimi is the default model and the only profile verified on the current six-role 
 .\.venv\Scripts\python.exe scripts\prepare_hub.py
 ```
 
-`prepare_hub.py` is local packaging and secret review only. Keep the FAB, staging directory, hashes, and report in the workspace; **do not publish to Flower Hub**. The seven-file package scan reported zero secret matches.
+`prepare_hub.py` is local packaging and secret review only; it does not publish. The seven-file package scan reported zero secret matches. The subsequently authorized v0.2.0 release was uploaded with `flwr app publish` from ignored `.runtime/hub-release-20260929/noesis-agents/`.
 
 ## Hackathon deliverables
 
 The organizer's public requirements JSON was checked on 29 September 2026. It requires collaborative Flower Agents on SuperGrid, an AgentApp published to Flower Hub, a team registration form with a team description and GitHub repository, and a 3–5 minute demo. Individual tasks are limited to five minutes; the coordinator task is configured for 240 seconds. Endeavor is optional.
 
-The six nodes are online and a real Kimi SuperGrid round is proven. The AgentApp is prepared locally but not published, as requested. The team form, description/repository submission, and 3–5 minute demo remain pending.
+The historical six-node Kimi SuperGrid round is proven. The AgentApp is now published as `@thesid42/noesis-agents` v0.2.0. The team form, description/repository submission, and 3–5 minute demo remain pending.
 
 ## Remaining evaluation
 
 - Rehearse the required 3–5 minute demo with real coordinator/node IDs and accepted response provenance.
 - Measure repeated source-fault latency through the first usable encoded output frame.
 - Evaluate editorial quality on a longer held-out AMI interval and measure fine A/V alignment.
-- Do not publish the local AgentApp package to Flower Hub unless the user explicitly requests that separate action.
 - Do not claim MiniMax testing or a multi-machine SuperGrid result; neither is part of this verified evidence.

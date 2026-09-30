@@ -1,0 +1,45 @@
+Use case: infographic-diagram.
+Create a polished, technically accurate architecture overview IMAGE for the existing application NOESIS. Landscape 16:10, large high-resolution canvas, presentation-ready, crisp legible typography, restrained white background, dark navy text, teal media paths, violet inference paths, blue control paths. Flat vector-style cards and clean orthogonal arrows, generous whitespace, no decorative computers or robots. This is a real system diagram, not a mock screenshot.
+
+Title: "NOESIS"
+Subtitle: "Autonomous multi-camera production"
+Small top annotation: "Current default: local Flower orchestration + remote model inference"
+
+Two unmistakable boundaries: a large "LOCAL MACHINE" area containing the application, Flower runtime, and model gateway; a smaller bottom band "REMOTE MODEL PROVIDERS". Nothing except the two model provider cards belongs in the remote band.
+
+Organize the local area into clear, visually separated sections with short text:
+1. "Media inputs" card: "AMI ES2002a replay" / "4 close-ups + 1 room view" / "4 headset channels + audio mix" / small secondary label "Synthetic test feeds".
+2. "Media engine" card: "Python · OpenCV · SoundFile" / "Synchronized frames + measured speech activity". Connect Media inputs to Media engine.
+3. "Local perception" card: "Optional Whisper transcripts" / "Frame quality measurements". Connect Media engine to Local perception; clearly local.
+4. "Control room" card: "HTML / CSS / JavaScript" / "Preview · manual override · model & delay controls".
+5. A central prominent "Controller + AI control" card: "FastAPI · :8765" / "Timestamped leases & report cache" / "Validate freshness, health & control epochs" / "Schedule accepted AI cuts".
+Connect Media engine and Local perception into this central controller. Control room has a double-headed BLUE connection to controller labeled "REST + live events".
+6. A grouped "LOCAL FLOWER AgentApp" panel with exactly six logical roles, represented by:
+   - "4 × Camera agents" with four tiny camera badges. Subtext: "One timestamped JPEG per view" / "Visual assessment + recommendation".
+   - "Critic" subtext "Review evidence & continuity".
+   - "Director" subtext "Choose hold / switch".
+   Small group label: "Six continuous loops · local SuperLink".
+   BLUE double-headed connection between this panel and Controller labeled "Leases · reports · decisions".
+   Show camera reports and critic advice feeding the Director, but label the conceptual report path "via controller cache". The Director is the only normal editorial shot selector.
+7. "Broadcast buffer" card: "Selectable delay" / "Video, audio & cuts share one clock". TEAL media connection from Media engine to buffer. BLUE connection from controller to buffer labeled "Accepted cuts".
+8. "Program output" card: "/program · continuous audio" / "Browser preview". Connect buffer to Program output using TEAL arrow.
+9. "OBS Studio" card: "Browser Source" / "Recording / streaming". TEAL arrow from Program output to OBS. Separate thin BLUE line from controller to OBS labeled "WebSocket v5 bridge".
+10. A local "Model gateway · :8770" card at bottom of local area: "Persistent HTTP connections" / "Model allowlist · private provider keys". VIOLET double-headed line from Flower AgentApp to this gateway, labeled "Inference".
+
+In the REMOTE MODEL PROVIDERS band, exactly two cards connected by VIOLET double-headed inference lines from the local gateway:
+- "Flower AI" / "Qwen3.5-9B" / "Camera agents · reasoning off"
+- "Nebius Token Factory" / "Kimi K2.7" / "Director + Critic"
+
+Bottom notes, short and legible:
+"Audio identifies speaker activity; images assess the visible shot."
+"Full recordings and raw audio stay local. Bounded JPEGs, measurements and text reach the configured models."
+"Optional deployment: hosted Flower SuperGrid."
+
+Legend: "Media" in teal, "Control / evidence" in blue, "Model inference" in violet.
+Prioritize readable labels and unambiguous arrow routing over decorative detail. Use each card once; do not invent a database, Redis, Kafka, React, Docker, cloud video storage, live capture hardware, or an active hosted SuperGrid. Do not depict audio going to remote providers. Do not imply the room view has a fifth camera agent. No logos requiring exact brand reproduction. All spelling must be correct.
+
+Final correction prompt (built-in imagegen edit):
+Edit this NOESIS architecture diagram. Preserve all cards, exact text, fonts, colors and general layout. Correct ONLY these two important connection errors, rerouting nearby lines cleanly if necessary:
+1. The BLUE double-headed "REST + live events" connection must connect "Control room" directly to "Controller + AI control". It currently lands on "Broadcast buffer"; remove that incorrect connection. Control room must have no direct arrow to Broadcast buffer.
+2. The TEAL media path into "Broadcast buffer" must originate directly at "Media engine", carrying video and audio. It must NOT originate from "Local perception". Keep "Local perception" connected only as optional evidence into "Controller + AI control", and retain the existing Media engine to Local perception and Media engine to Controller connections. Distinct crossing wires must have a small bridge/jump or spacing to avoid implying a junction.
+Keep the existing BLUE "Accepted cuts" connection from Controller to Broadcast buffer, all output connections, model provider routes, labels, and footer intact. Prioritize unambiguous correct arrow endpoints. Do not add or delete any component. Return the corrected complete image.
