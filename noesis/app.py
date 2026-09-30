@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from .controller import ControllerError, DirectorController
-from .ai_control import AIResultBody
+from .ai_control import AILeaseFailureBody, AIResultBody
 from .obs_bridge import SimpleOBSBridge
 
 
@@ -267,6 +267,10 @@ def create_app(
     @app.get("/api/ai/lease/{agent_id}")
     async def ai_lease(agent_id: str):
         return await director.ai_lease(agent_id)
+
+    @app.post("/api/ai/lease/failure")
+    async def ai_lease_failure(body: AILeaseFailureBody) -> dict[str, Any]:
+        return await director.fail_ai_lease(body.model_dump(exclude_none=True))
 
     @app.get("/api/audio")
     async def program_audio() -> Response:

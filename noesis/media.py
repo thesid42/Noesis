@@ -47,6 +47,7 @@ BLACK_DEBOUNCE_S = 0.8
 SOURCE_STALL_DEBOUNCE_S = 0.8
 MAX_OUTPUT_DELAY_S = 60.0
 MAX_BROADCAST_BYTES = 128 * 1024 * 1024
+MAX_AGENT_IMAGE_BYTES = 128 * 1024
 
 
 def _safe_read_json(path: Path) -> dict[str, Any] | None:
@@ -631,7 +632,6 @@ class MediaEngine:
                 self._capture_decoded[camera_id] = None
                 continue
             if fault and fault["kind"] == "offline":
-                captured[camera_id] = (_offline_card(camera, "SIGNAL LOST"), time_s, None)
                 self._capture_decoded[camera_id] = None
                 continue
             if fault and fault["kind"] == "freeze":
@@ -982,6 +982,56 @@ class MediaEngine:
                 "status": health.get("status"),
                 "age_ms": causal_age,
                 "health": health,
+            }
+
+    def agent_image_at(
+        self, camera_id: str, time_s: float, *, expected_buffer_epoch: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Select one retained causal JPEG for camera analysis without sampling media."""
+        if camera_id not in CAMERA_IDS:
+            raise ValueError(f"unknown camera_id {camera_id!r}")
+        target_time_s = float(time_s)
+        if not math.isfinite(target_time_s) or target_time_s < 0.0:
+            return None
+        with self._lock:
+            buffer_epoch = self._buffer_epoch
+            if expected_buffer_epoch is not None and expected_buffer_epoch != buffer_epoch:
+                return None
+            if self._output_enabled:
+                with self._broadcast_lock:
+                    if expected_buffer_epoch is not None and expected_buffer_epoch != self._buffer_epoch:
+                        return None
+                    entry = self._find_broadcast_entry_locked(camera_id, target_time_s)
+                    if entry is None:
+                        return None
+                    frame_time_s, jpeg, source_time_s, health = entry
+                    if target_time_s - frame_time_s > 2.0 or len(jpeg) > MAX_AGENT_IMAGE_BYTES:
+                        return None
+                    if health.get("status") in {"missing", "decoder-unavailable", "decode-error"}:
+                        return None
+                    return {
+                        "jpeg": bytes(jpeg),
+                        "camera_id": camera_id,
+                        "frame_time_s": frame_time_s,
+                        "source_time_s": source_time_s,
+                        "buffer_epoch": buffer_epoch,
+                    }
+
+            jpeg = self._frame_cache.get(camera_id)
+            record = self._camera_info[camera_id].get("_last", {})
+            frame_time_s = self._last_sample_time
+            if (not jpeg or frame_time_s is None or frame_time_s > target_time_s + 1e-9
+                    or target_time_s - frame_time_s > 2.0
+                    or len(jpeg) > MAX_AGENT_IMAGE_BYTES
+                    or record.get("status") in {"missing", "decoder-unavailable", "decode-error"}
+                    or (self._faults.get(camera_id) or {}).get("kind") == "offline"):
+                return None
+            return {
+                "jpeg": bytes(jpeg),
+                "camera_id": camera_id,
+                "frame_time_s": float(frame_time_s),
+                "source_time_s": record.get("source_time_s"),
+                "buffer_epoch": buffer_epoch,
             }
 
     def broadcast_frame(self, camera_id: str) -> bytes:

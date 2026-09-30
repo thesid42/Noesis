@@ -2,7 +2,7 @@
 
 Noesis defaults to Flower's native local runtime. A single local AgentApp run orchestrates six logical AI roles: four camera reviewers and a critic refresh independently, while the Director pins their latest recent reports and a current source snapshot. Each role has at most one request in flight. No Flower account, hosted coordinator, or SuperNode registration is needed to use this mode.
 
-Model inference is remote: the local AgentApp sends compact source measurements and role reports through the Noesis loopback gateway to the configured Nebius endpoint. Orchestration and media/OBS control remain local. The model prompts contain no raw video/audio or future annotations. Optional local transcription contributes recent unassigned speech text; lightweight frame analysis contributes timestamped blur, brightness, and face counts. These are background measurements, not a vision-language model.
+Model inference is remote: the local AgentApp sends source measurements and role reports through the Noesis loopback gateway. Each camera call also sends one bounded, timestamp-pinned JPEG to its configured model provider (currently Qwen3.5-9B through Flower). Critic/director calls use Nebius Kimi and receive structured visual assessments rather than images. Orchestration and media/OBS control remain local. Full video, raw audio, and future annotations are not sent. Optional local transcription contributes recent unassigned speech text; lightweight frame analysis contributes technical measurements. Image assessment uses the existing parallel camera calls, with no additional serial inference stage.
 
 ## Roles and decision flow
 
@@ -15,6 +15,12 @@ Model inference is remote: the local AgentApp sends compact source measurements 
 An optional `NOESIS_CAMERA_MODEL=qwen/qwen3.5-9b` override routes only the four camera roles to Flower's public Responses endpoint using `FLWR_MODEL_API_KEY`. Set `NOESIS_CAMERA_REASONING_EFFORT=none` for non-thinking camera responses. The director and critic retain the selected Nebius profile. Expected model identity is pinned per role, and the director may combine reports from the two configured models. Provider keys are held only by the local gateway.
 
 The controller validates the real model responses, request/session/model/override provenance, deadlines, and the target's current health before executing a choice. Manual camera control remains latched until explicit resume. If an AI response is missing or late, the controller holds a healthy current shot; if the on-air source fails, the health guard can move to a healthy source. The controller does not replace AI with speaker-score ranking.
+
+Role prompts prioritize current measured speaker evidence over a camera's visual appeal. Image assessments can identify an empty assigned view or relevant board interaction, but cannot establish motion or speech from a single frame. `hold` from a camera means standby/no strong takeover recommendation; only the director's `hold` preserves the projected program shot. Historical program and shot explanations are excluded from model inputs, while camera IDs and shot times remain for continuity. Pinned reports retain their observation times, and camera confidence is not a shot-ranking score.
+
+Continuous workers report terminal failures to `/api/ai/lease/failure` using their exact request and control epochs. Only the matching lease can be released; stale or duplicate receipts cannot cancel newer work or change accepted decisions. Failure reporting and short retry backoff replace waiting for an abandoned lease to expire. The gateway cancels its pending provider HTTP request if the local worker disconnects. These paths add no inference calls or serial model stage.
+
+Director admission requires at least three seconds for inference plus half a second for submission before both evidence expiry and the buffered target's output deadline. This is a minimum useful budget, not a latency guarantee. If evidence is too old, the controller waits for fresh reports without consuming their response IDs. The fifteen-second evidence lifetime and rejection of already-aired targets still apply. A provider taking six or seven seconds will require a longer output delay than five seconds, even with healthy orchestration.
 
 ## Run the local runtime
 

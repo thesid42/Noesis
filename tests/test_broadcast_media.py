@@ -153,6 +153,7 @@ def test_missing_ami_cameras_do_not_hold_the_delayed_clock_in_buffering(tmp_path
         assert ready["phase"] == "playing"
         assert not any(ready["camera_ready"].values())
         assert all(media.broadcast_frame(camera_id) for camera_id in CAMERA_IDS)
+        assert all(media.agent_image_at(camera_id, ready["time_s"]) is None for camera_id in CAMERA_IDS)
     finally:
         media.close()
 
@@ -190,5 +191,50 @@ def test_camera_age_tracks_capture_clock_and_stays_frozen_while_paused():
         )
         assert abs(still_paused_age - paused_age) < 1.0
         assert still_paused["observation_age_ms"] > paused["observation_age_ms"] + 30.0
+    finally:
+        media.close()
+
+
+def test_agent_image_at_selects_only_a_causal_buffered_frame_for_the_epoch():
+    media = MediaEngine(output_delay_s=0.05)
+    try:
+        media.start("synthetic")
+        _wait_for(lambda: media.buffered_camera("closeup1", 1.0) is not None)
+        with media._broadcast_lock:
+            first_pts = media._broadcast_frames["closeup1"][0][0]
+        epoch = media.broadcast_snapshot()["buffer_epoch"]
+
+        assert media.agent_image_at("closeup1", first_pts - 0.001) is None
+        image = media.agent_image_at("closeup1", first_pts, expected_buffer_epoch=epoch)
+        assert image is not None
+        assert image["frame_time_s"] <= first_pts
+        assert image["source_time_s"] == image["frame_time_s"]
+        assert image["buffer_epoch"] == epoch
+        assert len(image["jpeg"]) <= 128 * 1024
+        assert media.agent_image_at("closeup1", first_pts, expected_buffer_epoch=epoch + 1) is None
+        assert media.agent_image_at("closeup1", first_pts + 2.01) is None
+    finally:
+        media.close()
+
+
+def test_agent_image_at_uses_cached_zero_delay_frame_and_preserves_frozen_source_pts():
+    media = MediaEngine()
+    try:
+        assert media.agent_image_at("closeup1", 1.0) is None
+        media.start("synthetic", start_s=1.0)
+        first_pts = media._last_sample_time
+        image = media.agent_image_at("closeup1", first_pts)
+        assert image is not None
+        assert image["frame_time_s"] == first_pts
+
+        media.inject_fault("closeup1", "freeze", duration_s=5.0)
+        frozen_source_time = media._faults["closeup1"]["frozen_source_time_s"]
+        time.sleep(0.12)
+        snapshot = media.snapshot()
+        target_time_s = snapshot["time_s"]
+        frozen_image = media.agent_image_at("closeup1", target_time_s)
+        assert frozen_image is not None
+        assert frozen_image["frame_time_s"] > frozen_image["source_time_s"]
+        assert frozen_image["source_time_s"] == frozen_source_time
     finally:
         media.close()

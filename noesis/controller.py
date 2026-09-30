@@ -479,6 +479,8 @@ class DirectorController(BroadcastMixin, AIControlMixin):
             "topology": deployment,
             "deployment": deployment,
             "inference_results": copy.deepcopy(list(self._inference_results.values())),
+            "inference_failures": self._inference_failures_snapshot(),
+            "director_wait_reason": self._ai_director_wait_reason,
             "grid_run": copy.deepcopy(self._grid_run),
             "last_model_result": copy.deepcopy(self._last_model_result),
             "decision_modes": decision_modes,
@@ -634,9 +636,11 @@ class DirectorController(BroadcastMixin, AIControlMixin):
                 self._reported_manual_faults.clear()
                 self._metrics.update(cuts=0, fallbacks=0,
                                      rejected_proposals=0, model_timeouts=0, last_recovery_ms=None,
-                                     ai_rounds=0, ai_responses=0, ai_decisions=0, ai_cuts=0)
+                                     ai_rounds=0, ai_responses=0, ai_decisions=0, ai_cuts=0,
+                                     ai_role_failures=0, ai_role_timeouts=0)
                 self._last_model_result = None
                 self._inference_results.clear()
+                self._ai_lease_failures.clear()
                 self._events.clear()
                 self._add_event("session_started", "operator", f"Started {input_mode} session in {output_mode} mode.")
         await self.tick()

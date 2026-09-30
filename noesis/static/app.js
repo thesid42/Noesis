@@ -208,6 +208,9 @@
     refs.broadcastStatus.textContent = `${Number(b.delay_s ?? refs.broadcastDelay.value)}s delay · ${b.phase || 'standby'}`;
     refs.broadcastMetrics.textContent = `Input ${fmtTime(state.session && state.session.time_s)} · On air ${fmtTime(b.time_s)} · ${Number(b.captured_fps || 0).toFixed(1)} captured fps · ${b.pending_cuts || 0} queued cuts · ${state.metrics && state.metrics.ai_deadline_misses || 0} missed deadlines`;
     const p = state.perception || {};
+    const roleFailures = state.metrics && state.metrics.ai_role_failures || 0;
+    const roleTimeouts = state.metrics && state.metrics.ai_role_timeouts || 0;
+    refs.broadcastMetrics.textContent += ` · ${roleFailures} failed AI requests (${roleTimeouts} timing failures)`;
     const ps = p.status || {};
     refs.perceptionStatus.textContent = `Speech: ${ps.speech && ps.speech.state || 'unavailable'} · Visual: ${ps.visual && ps.visual.state || 'unavailable'}`;
     refs.transcriptPreview.textContent = p.transcript && p.transcript.text || 'No recent speech observations.';
@@ -344,7 +347,7 @@
     refs.modelProfileStatus.textContent = profileBusy ? 'Switching profile…' : '';
     if (separateCamera && !profileBusy) {
       const reasoning = cameraModel.reasoning_effort === 'none' ? 'reasoning off' : `reasoning ${cameraModel.reasoning_effort || 'default'}`;
-      refs.modelProfileStatus.textContent = `Cameras: ${cameraModel.model} via Flower · ${reasoning}`;
+      refs.modelProfileStatus.textContent = `Cameras: ${cameraModel.model} via Flower · images + signals · ${reasoning}`;
     }
     refs.modelVerificationStatus.textContent = '';
     refs.modelVerificationStatus.dataset.state = '';
@@ -362,6 +365,8 @@
   function renderModelProvenance(state) {
     const flower = state.flower || {};
     const results = Array.isArray(flower.inference_results) ? flower.inference_results : [];
+    const failures = new Map((Array.isArray(flower.inference_failures) ? flower.inference_failures : [])
+      .map((failure) => [failure.agent_id, failure]));
     const latest = new Map();
     for (const result of results) {
       const key = roleRecordKey(result);
@@ -385,21 +390,62 @@
       const wrongModel = result && assignment && assignment.model && result.model !== assignment.model;
       const stale = oldEpoch || oldSession || wrongModel;
       const accepted = result && result.status === 'completed' && typeof result.response_id === 'string' && result.response_id.length > 0 && !stale;
-      const failed = result && ['failed', 'error', 'rejected', 'incomplete'].includes(String(result.status || '').toLowerCase()) && !stale;
+      const lastFailure = failures.get(role.agent);
+      const currentFailure = lastFailure && lastFailure.session_id === currentSessionId
+        && lastFailure.epoch === currentSessionEpoch && lastFailure.model_epoch === epoch
+        && (currentOverrideEpoch === null || lastFailure.override_epoch === currentOverrideEpoch)
+        && (!assignment || !assignment.model || lastFailure.model === assignment.model) ? lastFailure : null;
+      const failed = Boolean(currentFailure || (result && ['failed', 'error', 'rejected', 'incomplete'].includes(String(result.status || '').toLowerCase()) && !stale));
+      const evidenceAge = accepted && finite(result.media_time_s) && finite(session.time_s)
+        ? Math.max(0, session.time_s - result.media_time_s) : null;
+      const outdated = accepted && active && evidenceAge !== null && evidenceAge >= 15;
       let status = accepted ? 'VERIFIED' : failed ? 'RESPONSE FAILED' : stale ? (oldEpoch ? 'PREVIOUS PROFILE' : 'PREVIOUS ROUND') : modes[role.decisionRole] === 'llm' ? (active ? 'WAITING FOR RESPONSE' : 'NO RESPONSE YET') : 'ROLE NOT REPORTED';
       const details = [];
       if (assignment && assignment.model && !accepted) details.push(`Configured: ${assignment.model}`);
       if (accepted) {
         // Structured response fields shown instead; no time/tokens/model line.
+        if (role.decisionRole === 'camera') {
+          const visual = result.result && result.result.visual;
+          const observedImage = result.image;
+          if (observedImage && visual && finite(observedImage.frame_time_s)) {
+            status = 'IMAGE ASSESSED';
+            details.push(`Image at ${fmtTime(observedImage.frame_time_s)} · ${String(visual.activity || 'uncertain')}`);
+            details.push(`Person ${String(visual.person_visibility || 'uncertain')} · board ${String(visual.board_visibility || 'uncertain').replaceAll('_', ' ')}`);
+            if (typeof visual.summary === 'string') details.push(visual.summary.slice(0, 180));
+          } else {
+            status = 'IMAGE UNAVAILABLE';
+            details.push('No camera image was supplied; visual content is unknown.');
+          }
+        }
       } else if (failed) {
-        if (finite(result.http_status)) details.push(`HTTP ${Math.round(result.http_status)}`);
-        else if (typeof result.error_class === 'string') details.push(result.error_class.slice(0, 40));
+        if (result && finite(result.http_status)) details.push(`HTTP ${Math.round(result.http_status)}`);
+        else if (result && typeof result.error_class === 'string') details.push(result.error_class.slice(0, 40));
       } else if (stale) {
         details.push(oldEpoch ? 'A response from an earlier model profile is retained; waiting for a fresh one.' : 'A response from an earlier session or control epoch is retained; waiting for a fresh one.');
       } else if (modes[role.decisionRole] === 'llm') {
         details.push('Configured AI role has not returned a verified response yet.');
       } else {
         details.push('Waiting for the controller to report this AI role.');
+      }
+      if (accepted && evidenceAge !== null) {
+        details.push(`Last accepted evidence: ${fmtTime(result.media_time_s)} (${evidenceAge.toFixed(1)}s behind input)`);
+      }
+      if (currentFailure) {
+        status = 'REQUEST FAILED';
+        const code = String(currentFailure.error_code || 'request_failed');
+        details.unshift(`Latest attempt: ${code.replaceAll('_', ' ')}`);
+        if (role.agent === 'director' && (code.includes('timeout') || code.includes('deadline') || code.includes('expired'))) {
+          details.push('If deadlines keep failing, stop the session and increase broadcast delay.');
+        }
+      } else if (outdated) {
+        status = 'WAITING FOR FRESH RESPONSE';
+      }
+      const directorWait = role.agent === 'director' && active ? flower.director_wait_reason : null;
+      if (directorWait === 'output_budget') {
+        status = 'INCREASE BROADCAST DELAY';
+        details.push('Too little time before output. Stop the session and select a delay of at least 5 seconds.');
+      } else if (directorWait === 'evidence_budget' && !currentFailure) {
+        status = 'WAITING FOR FRESH EVIDENCE';
       }
       let responseHtml = '';
       if (accepted && result.result) {
@@ -413,7 +459,7 @@
         }
       }
       const detailsLine = details.length ? `<span>${escapeHtml(details.join(' · '))}</span>` : (!accepted ? `<span>${escapeHtml(status)}</span>` : '');
-      return `<div class="ai-role-row" data-state="${accepted ? 'verified' : failed ? 'error' : 'pending'}"><span class="ai-role-mark" aria-hidden="true">${accepted ? '✓' : failed ? '!' : '·'}</span><span class="ai-role-copy"><span class="ai-role-head"><strong>${role.title}</strong><span class="ai-role-state">${status}</span></span>${detailsLine}${responseHtml}</span></div>`;
+      return `<div class="ai-role-row" data-state="${failed ? 'error' : accepted && !outdated && !directorWait ? 'verified' : 'pending'}"><span class="ai-role-mark" aria-hidden="true">${failed ? '!' : accepted && !outdated && !directorWait ? '✓' : '·'}</span><span class="ai-role-copy"><span class="ai-role-head"><strong>${role.title}</strong><span class="ai-role-state">${status}</span></span>${detailsLine}${responseHtml}</span></div>`;
     }).join('');
   }
   function renderTrace(state) {

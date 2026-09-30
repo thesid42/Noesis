@@ -6,6 +6,7 @@ project environment and are selected by the requested, configured model ID.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 import hmac
@@ -203,6 +204,34 @@ def _response_id_from_body(body: bytes) -> str | None:
     return response_id if isinstance(response_id, str) and 0 < len(response_id) <= 200 else None
 
 
+class _CallerDisconnected(Exception):
+    """The local worker no longer needs this inference response."""
+
+
+async def _send_until_disconnect(client: httpx.AsyncClient, upstream_request: httpx.Request,
+                                 request: Request) -> httpx.Response:
+    # The request body has already been consumed. Waiting on ASGI disconnect
+    # needs no polling and cancels the HTTP request when a worker times out.
+    async def disconnected() -> None:
+        while True:
+            if (await request.receive())["type"] == "http.disconnect":
+                return
+
+    sending = asyncio.create_task(client.send(upstream_request))
+    watching = asyncio.create_task(disconnected())
+    try:
+        done, _ = await asyncio.wait((sending, watching), return_when=asyncio.FIRST_COMPLETED)
+        if sending in done:
+            return sending.result()
+        watching.result()
+        raise _CallerDisconnected()
+    finally:
+        for task in (sending, watching):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(sending, watching, return_exceptions=True)
+
+
 def create_app(
     targets: Mapping[str, ProviderTarget] | None = None,
     token: str | None = None,
@@ -282,7 +311,7 @@ def create_app(
             client: httpx.AsyncClient = request.app.state.http_client
             upstream_request = client.build_request("POST", target.endpoint, content=body, headers=headers)
             upstream_started_ns = time.monotonic_ns()
-            upstream = await client.send(upstream_request)
+            upstream = await _send_until_disconnect(client, upstream_request, request)
             if not upstream.is_success:
                 status_code = upstream.status_code
                 await upstream.aclose()
@@ -319,6 +348,10 @@ def create_app(
             timing_header = f"upstream;dur={upstream_ms:.3f}, gateway;dur={gateway_processing_ms:.3f}"
             return Response(content=response_body, status_code=status_code,
                             headers={"content-type": content_type, "server-timing": timing_header})
+        except _CallerDisconnected:
+            record_timing({"event": "caller_disconnected", "profile": target.profile,
+                           "elapsed_ms": round((time.monotonic_ns() - request_received_ns) / 1_000_000, 3)})
+            return Response(status_code=499)
         except Exception as exc:
             record_timing({
                 "event": "provider_error",
